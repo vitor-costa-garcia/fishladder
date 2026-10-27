@@ -1,4 +1,4 @@
-   import fishladder
+import fishladder
 
-   def test_version():
-       assert fishladder.__version__
+def test_version():
+    assert fishladder.__version__
