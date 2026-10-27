@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fishladder"
+version = "0.0.1"
+description = "Evaluation framework for online multi-target active learning on data streams."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Vitor da Costa Garcia", email = "vitorcostagarcia2006@gmail.com" }]
+keywords = ["active-learning", "data-streams", "online-learning", "multi-target-regression"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+plots = ["matplotlib"]
+dev = ["pytest", "ruff", "mypy"]
+
+[project.urls]
+Homepage = "https://github.com/vitor-costa-garcia/fishladder"
+Issues = "https://github.com/vitor-costa-garcia/fishladder/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fishladder"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
