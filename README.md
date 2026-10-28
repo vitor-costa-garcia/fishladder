@@ -4,6 +4,8 @@
 [![PyPI](https://img.shields.io/pypi/v/fishladder)](https://pypi.org/project/fishladder/)
 [![License](https://img.shields.io/pypi/l/fishladder)](https://github.com/vitor-costa-garcia/fishladder/blob/main/LICENSE)
 
+![Fishladder Banner](images/fishladder_banner.jpg)
+
 **An evaluation framework for online multi-output active learning on data streams.**
 
 > ⚠️ **Early development.** This release (`0.0.1`) mainly reserves the package name.
