@@ -7,6 +7,7 @@ Examples of fishladder in use, with [River](https://riverml.xyz) for the data, m
 | [01_quickstart.ipynb](01_quickstart.ipynb) | Per-output costs, query strategies and budgets, prequential evaluation, the experiment log, and learning curves indexed by cost |
 | [02_river_wrapper.ipynb](02_river_wrapper.ipynb) | Adding output-level active learning to an existing River application with `fl.active.Wrapper` |
 | [03_query_strategies.ipynb](03_query_strategies.ipynb) | Query-by-committee and expected-error strategies, why they need `fl.budget.VariableThreshold`, and when they beat random querying (and when they don't) |
+| [04_synthetic_streams.ipynb](04_synthetic_streams.ipynb) | Generating streams with `fl.synth.MultiTarget`, and what shared and per-output budgets do when a single output drifts |
 
 To run them, install fishladder from a clone of this repository with the River and plotting
 extras:
