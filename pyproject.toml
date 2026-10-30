@@ -7,7 +7,7 @@ name = "fishladder"
 version = "0.1.0"
 description = "Evaluation framework for online multi-output active learning on data streams."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = "Vitor da Costa Garcia", email = "vitorcostagarcia2006@gmail.com" }]
