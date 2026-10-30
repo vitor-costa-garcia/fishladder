@@ -3,6 +3,7 @@
 [![CI](https://github.com/vitor-costa-garcia/fishladder/actions/workflows/ci.yml/badge.svg)](https://github.com/vitor-costa-garcia/fishladder/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/fishladder)](https://pypi.org/project/fishladder/)
 [![License](https://img.shields.io/pypi/l/fishladder)](https://github.com/vitor-costa-garcia/fishladder/blob/main/LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23799345.svg)](https://doi.org/10.5281/zenodo.23799345)
 
 ![Fishladder Banner](https://raw.githubusercontent.com/vitor-costa-garcia/fishladder/main/images/fishladder_banner.jpg)
 
@@ -125,6 +126,13 @@ delayed labels, and randomized querying.
 
 Ideas, use cases and criticism are welcome through
 [GitHub issues](https://github.com/vitor-costa-garcia/fishladder/issues).
+
+## Citation
+
+If you use fishladder in your research, please cite it with its
+[DOI](https://doi.org/10.5281/zenodo.23799345), which always points to the
+latest version. GitHub's "Cite this repository" button gives the reference in
+APA and BibTeX.
 
 ## License
 
