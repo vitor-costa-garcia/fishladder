@@ -260,6 +260,7 @@ def test_log_shape():
         "queried",
         "cost",
         "cum_cost",
+        "delay",
     ]
 
 
@@ -622,3 +623,177 @@ def test_shared_budget_breaks_ties_by_least_spent():
         queried = b.select_one(dict.fromkeys(costs, 1.0), costs)
         b.update({o: costs[o] for o in queried})
     assert b.spent_per_output == {"a": 10.0, "b": 10.0, "c": 10.0}
+
+
+# Delayed labels
+
+
+def counting_stream(n):
+    """Every output of instance t is t, so the mean model reveals what it has learned."""
+    for t in range(n):
+        yield {"t": t}, dict.fromkeys(COSTS, float(t))
+
+
+def test_zero_delay_is_no_delay():
+    runs = []
+    for delay in (None, 0, {"a": 0, "b": 0, "c": 0}):
+        model = MeanModel()
+        log = fl.evaluate.prequential(
+            make_stream(100),
+            model,
+            fl.strategy.RandomPerOutput(0.5, seed=1),
+            fl.budget.RateBudget(2.0),
+            COSTS,
+            delay=delay,
+        )
+        runs.append((log.to_frame(), model.learned))
+    for df, learned in runs[1:]:
+        assert df.equals(runs[0][0])
+        assert learned == runs[0][1]
+
+
+@pytest.mark.parametrize("d", [1, 3, 10])
+def test_constant_delay_hides_labels_for_d_instances(d):
+    model = MeanModel()
+    log = fl.evaluate.prequential(
+        counting_stream(30), model, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, delay=d
+    )
+    df = log.to_frame().query("output == 'a'").set_index("step")
+    for n in range(30):
+        # Instance n is predicted with the labels of instances 0 to n - d - 1
+        known = range(n - d)
+        expected = statistics.mean(known) if known else None
+        if expected is None:
+            assert math.isnan(df.loc[n, "y_pred"])
+        else:
+            assert df.loc[n, "y_pred"] == pytest.approx(expected)
+    # The last d labels were paid for but never learned
+    assert len(model.learned) == 30 - d
+    assert (df["delay"] == d).all()
+
+
+def test_per_output_delays():
+    model = MeanModel()
+    log = fl.evaluate.prequential(
+        counting_stream(10),
+        model,
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        COSTS,
+        delay={"a": 0, "b": 2, "c": math.inf},
+    )
+    df = log.to_frame()
+    assert model.counts == {"a": 10, "b": 8}
+    assert df.query("output == 'c'")["y_pred"].isna().all()
+    # Labels arriving together are learned together, oldest instance first
+    assert model.learned[:3] == [{"a": 0.0}, {"a": 1.0}, {"b": 0.0}]
+    assert model.learned[3] == {"a": 2.0}
+    assert df.query("queried").groupby("output")["delay"].first().to_dict() == {
+        "a": 0,
+        "b": 2,
+        "c": math.inf,
+    }
+
+
+def test_outputs_with_same_arrival_are_learned_together():
+    model = MeanModel()
+    fl.evaluate.prequential(
+        counting_stream(5), model, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, delay=1
+    )
+    assert model.learned == [dict.fromkeys(COSTS, float(t)) for t in range(4)]
+
+
+def test_delayed_queries_are_paid_when_made():
+    budget = fl.budget.Unlimited()
+    log = fl.evaluate.prequential(
+        counting_stream(20), MeanModel(), fl.strategy.QueryAll(), budget, COSTS, delay=math.inf
+    )
+    df = log.to_frame()
+    assert budget.spent == 20 * sum(COSTS.values())
+    assert df["y_pred"].isna().all()
+    assert df.groupby("step")["cum_cost"].first().is_monotonic_increasing
+
+
+def test_unqueried_outputs_have_no_delay():
+    log = fl.evaluate.prequential(
+        make_stream(50),
+        MeanModel(),
+        fl.strategy.RandomPerOutput(0.3, seed=0),
+        fl.budget.Unlimited(),
+        COSTS,
+        delay=5,
+    )
+    df = log.to_frame()
+    assert df[~df["queried"]]["delay"].isna().all()
+    assert (df[df["queried"]]["delay"] == 5).all()
+
+
+def test_strategy_learns_from_prediction_made_at_query_time():
+    spy = SpyStrategy()
+    log = fl.evaluate.prequential(
+        counting_stream(20), MeanModel(), spy, fl.budget.Unlimited(), COSTS, delay=4
+    )
+    df = log.to_frame()
+    at_query = [
+        {o: v for o, v in zip(g["output"], g["y_pred"]) if not math.isnan(v)}
+        for _, g in df.groupby("step")
+    ]
+    assert spy.seen == at_query[:16]
+
+
+def test_delay_function_is_called_per_query_in_cost_order():
+    calls = []
+
+    def delay(x, y, output):
+        calls.append((x["t"], y[output], output))
+        return x["t"] % 3
+
+    fl.evaluate.prequential(
+        counting_stream(6),
+        MeanModel(),
+        fl.strategy.RandomPerOutput(0.5, seed=3),
+        fl.budget.Unlimited(),
+        COSTS,
+        delay=delay,
+    )
+    assert calls
+    for t, value, _ in calls:
+        assert value == t
+    for t in range(6):
+        outputs = [o for s, _, o in calls if s == t]
+        assert outputs == [o for o in COSTS if o in outputs]
+
+
+@pytest.mark.parametrize(
+    "delay, error",
+    [
+        (-1, ValueError),
+        (1.5, ValueError),
+        (math.nan, ValueError),
+        ("3", ValueError),
+        ({"a": 0, "b": 0}, KeyError),
+        ({"a": 0, "b": 0, "c": 0, "d": 0}, KeyError),
+        ({"a": 0, "b": -2, "c": 0}, ValueError),
+        (lambda x, y, o: -1, ValueError),
+    ],
+)
+def test_delay_validation(delay, error):
+    with pytest.raises(error):
+        fl.evaluate.prequential(
+            counting_stream(5),
+            MeanModel(),
+            fl.strategy.QueryAll(),
+            fl.budget.Unlimited(),
+            COSTS,
+            delay=delay,
+        )
+
+
+def test_wrapper_learns_from_given_prediction():
+    spy = SpyStrategy()
+    model = fl.active.Wrapper(MeanModel(), spy, fl.budget.Unlimited(), COSTS)
+    x_old = {"t": 0}
+    y_pred_old, _ = model.predict_one(x_old)
+    model.learn_one({"t": 1}, {"a": 5.0})
+    model.learn_one(x_old, {"a": 1.0}, y_pred=y_pred_old)
+    assert spy.seen == [{}, {}]

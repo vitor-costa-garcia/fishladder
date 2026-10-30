@@ -12,7 +12,17 @@ if typing.TYPE_CHECKING:
 
 __all__ = ["Log"]
 
-COLUMNS = ("step", "output", "y_true", "y_pred", "utility", "queried", "cost", "cum_cost")
+COLUMNS = (
+    "step",
+    "output",
+    "y_true",
+    "y_pred",
+    "utility",
+    "queried",
+    "cost",
+    "cum_cost",
+    "delay",
+)
 
 
 class Log:
@@ -40,6 +50,11 @@ class Log:
         The cost paid for this output.
     cum_cost
         The total cost spent up to and including this instance.
+    delay
+        For queried outputs, the number of instances after which the label was learned: 0 if it
+        was learned right after this instance, `inf` if it never arrives. `None` for outputs that
+        were not queried. A label with a finite delay may still not have arrived when the stream
+        ended, which happens when `step + delay` is beyond the last step.
 
     """
 
@@ -62,9 +77,15 @@ class Log:
         queried: Iterable[Output],
         costs: Mapping[Output, float],
         cum_cost: float,
+        delays: Mapping[Output, float] | None = None,
     ) -> None:
-        """Record one instance. Every output in `costs` gets a row."""
+        """Record one instance. Every output in `costs` gets a row.
+
+        `delays` gives the delay of each queried output, which defaults to 0.
+
+        """
         queried = set(queried)
+        delays = delays or {}
         for o in costs:
             q = o in queried
             self._rows.append(
@@ -77,6 +98,7 @@ class Log:
                     q,
                     costs[o] if q else 0.0,
                     cum_cost,
+                    delays.get(o, 0) if q else None,
                 )
             )
 

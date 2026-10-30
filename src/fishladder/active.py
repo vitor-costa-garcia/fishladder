@@ -100,7 +100,7 @@ class Wrapper:
         y_pred, _, ask = self.query_one(x)
         return y_pred, ask
 
-    def learn_one(self, x: dict, y: dict) -> None:
+    def learn_one(self, x: dict, y: dict, y_pred: dict | None = None) -> None:
         """Learn from the outputs that were revealed for `x`.
 
         Parameters
@@ -109,16 +109,20 @@ class Wrapper:
             A dictionary of features.
         y
             The revealed outputs. It may contain only some of the outputs.
+        y_pred
+            The prediction returned by `predict_one` when `x` was queried. Pass it when labels
+            arrive late, after the model learned from other instances: the strategy then learns
+            from the prediction it made the query with. By default, the prediction is reused if
+            `x` is the last instance passed to `predict_one`, and recomputed otherwise.
 
         """
         if not y:
             return
-        # The strategy needs the prediction the model made before learning. It is reused from
-        # predict_one when learning from the same x right after, and recomputed otherwise.
-        if self._last is not None and self._last[0] is x:
-            y_pred = self._last[1]
-        else:
-            y_pred = self.model.predict_one(x)
+        if y_pred is None:
+            if self._last is not None and self._last[0] is x:
+                y_pred = self._last[1]
+            else:
+                y_pred = self.model.predict_one(x)
         self._last = None
         self.model.learn_one(x, y)
         self.strategy.learn_one(x, y, y_pred)
