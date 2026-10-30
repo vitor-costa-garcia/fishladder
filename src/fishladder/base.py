@@ -95,14 +95,16 @@ class BudgetManager(abc.ABC):
     in number of queries.
 
     By default, outputs are picked greedily by decreasing utility, skipping any output that does
-    not fit in what is left of the budget. Since all outputs share the same budget, cheap outputs
-    can keep an expensive one from ever being queried; `budget.PerOutput` avoids this by giving
-    each output its own budget.
+    not fit in what is left of the budget. Ties go to the output that has had the least spent on
+    it, so that outputs with the same utility, such as with `strategy.RandomPerOutput`, take
+    turns. Since all outputs share the same budget, cheap outputs can still keep an expensive one
+    from ever being queried; `budget.PerOutput` avoids this by giving each output its own budget.
 
     """
 
     def __init__(self) -> None:
         self.spent = 0.0
+        self.spent_per_output: dict[Output, float] = {}
         self.n_seen = 0
 
     @property
@@ -130,7 +132,10 @@ class BudgetManager(abc.ABC):
         left = self.available
         selected = set()
         candidates = [o for o, u in utilities.items() if u > 0]
-        for o in sorted(candidates, key=lambda o: utilities[o], reverse=True):
+        ranked = sorted(
+            candidates, key=lambda o: (-utilities[o], self.spent_per_output.get(o, 0.0))
+        )
+        for o in ranked:
             if costs[o] <= left:
                 selected.add(o)
                 left -= costs[o]
@@ -147,4 +152,6 @@ class BudgetManager(abc.ABC):
 
         """
         self.spent += sum(queried.values())
+        for o, c in queried.items():
+            self.spent_per_output[o] = self.spent_per_output.get(o, 0.0) + c
         self.n_seen += 1

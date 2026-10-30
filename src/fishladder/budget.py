@@ -132,7 +132,6 @@ class PerOutput(BudgetManager):
         self.shares = shares
         self._budgets: dict[Output, BudgetManager] = {}
         self._shares: dict[Output, float] = {}
-        self.spent_per_output: dict[Output, float] = {}
 
     def _init_outputs(self, outputs: list[Output]) -> None:
         shares = self.shares if self.shares is not None else {o: 1.0 for o in outputs}
@@ -169,7 +168,6 @@ class PerOutput(BudgetManager):
         super().update(queried)
         for o, b in self._budgets.items():
             if o in queried:
-                self.spent_per_output[o] += queried[o]
                 b.update({o: queried[o] / self._shares[o]})
             else:
                 b.update({})

@@ -602,3 +602,12 @@ def test_multitarget_works_with_prequential():
 def test_multitarget_validation(kwargs, error):
     with pytest.raises(error):
         fl.synth.MultiTarget(**kwargs)
+
+
+def test_shared_budget_breaks_ties_by_least_spent():
+    b = fl.budget.RateBudget(1.0)
+    costs = {"a": 1.0, "b": 1.0, "c": 1.0}
+    for _ in range(30):
+        queried = b.select_one(dict.fromkeys(costs, 1.0), costs)
+        b.update({o: costs[o] for o in queried})
+    assert b.spent_per_output == {"a": 10.0, "b": 10.0, "c": 10.0}

@@ -145,7 +145,7 @@ def prequential(
 
     >>> df = log.to_frame()
     >>> df.groupby("output")["queried"].sum().to_dict()
-    {'a': 89, 'b': 5}
+    {'a': 75, 'b': 12}
 
     """
     log = Log()
