@@ -72,7 +72,7 @@ class QueryStrategy(abc.ABC):
 
         """
 
-    def learn_one(self, x: dict, y: dict) -> None:
+    def learn_one(self, x: dict, y: dict, y_pred: dict) -> None:
         """Update the strategy with the outputs that were revealed for `x`.
 
         Parameters
@@ -81,6 +81,8 @@ class QueryStrategy(abc.ABC):
             A dictionary of features.
         y
             The revealed outputs.
+        y_pred
+            The model's predictions for `x`, made before it learned from `y`.
 
         """
 

@@ -8,7 +8,7 @@ from collections.abc import Mapping
 
 from fishladder.base import BudgetManager, Output
 
-__all__ = ["PerOutput", "RateBudget", "TotalBudget", "Unlimited"]
+__all__ = ["PerOutput", "RateBudget", "TotalBudget", "Unlimited", "VariableThreshold"]
 
 
 class TotalBudget(BudgetManager):
@@ -173,3 +173,86 @@ class PerOutput(BudgetManager):
                 b.update({o: queried[o] / self._shares[o]})
             else:
                 b.update({})
+
+
+class VariableThreshold(BudgetManager):
+    """Only query an output when its utility is high compared to its recent utilities.
+
+    Other budget managers query an output as soon as it is affordable, so the size of its utility
+    hardly matters. This manager adds a threshold for each output, adapted as in the variable
+    uncertainty strategy of Žliobaitė et al. (2014): when an output is affordable, it is queried
+    only if its utility reaches the threshold, which is then raised. When an output is affordable
+    but its utility is too low, the threshold is lowered. Budget is thus saved for the instances
+    with the highest utilities, and the threshold adapts to the scale of each output's utilities.
+
+    Each threshold starts at the first finite utility seen for its output. Infinite utilities
+    always pass the threshold and do not change it.
+
+    Parameters
+    ----------
+    budget
+        The budget manager that decides what is affordable, such as `PerOutput(RateBudget(1.0))`.
+        It is updated along with this manager.
+    step
+        The relative amount by which thresholds are raised or lowered.
+
+    References
+    ----------
+    Žliobaitė, I., Bifet, A., Pfahringer, B., & Holmes, G. (2014). Active learning with drifting
+    streaming data. IEEE Transactions on Neural Networks and Learning Systems, 25(1), 27-39.
+
+    Examples
+    --------
+
+    >>> from fishladder import budget
+
+    >>> b = budget.VariableThreshold(budget.Unlimited(), step=0.1)
+    >>> for u in [1.0, 0.5, 2.0]:
+    ...     queried = b.select_one({"a": u}, costs={"a": 1.0})
+    ...     b.update({o: 1.0 for o in queried})
+    ...     print(u, queried, round(b.thresholds["a"], 3))
+    1.0 {'a'} 1.1
+    0.5 set() 0.99
+    2.0 {'a'} 1.089
+
+    """
+
+    def __init__(self, budget: BudgetManager, step: float = 0.01):
+        super().__init__()
+        if not 0 < step < 1:
+            raise ValueError(f"step must be between 0 and 1, got {step}")
+        self.budget = budget
+        self.step = step
+        self.thresholds: dict[Output, float] = {}
+        self._affordable: dict[Output, float] = {}
+
+    @property
+    def available(self) -> float:
+        return self.budget.available
+
+    def select_one(
+        self, utilities: Mapping[Output, float], costs: Mapping[Output, float]
+    ) -> set[Output]:
+        # Remember which outputs were affordable, since update adapts their thresholds
+        self._affordable = {
+            o: u for o, u in utilities.items() if u > 0 and self.budget.select_one({o: u}, costs)
+        }
+        for o, u in self._affordable.items():
+            if o not in self.thresholds and math.isfinite(u):
+                self.thresholds[o] = u
+        passing = {
+            o: u for o, u in self._affordable.items() if u >= self.thresholds.get(o, -math.inf)
+        }
+        return self.budget.select_one(passing, costs)
+
+    def update(self, queried: Mapping[Output, float]) -> None:
+        super().update(queried)
+        self.budget.update(queried)
+        for o, u in self._affordable.items():
+            if not math.isfinite(u):
+                continue
+            if o in queried:
+                self.thresholds[o] *= 1 + self.step
+            else:
+                self.thresholds[o] *= 1 - self.step
+        self._affordable = {}

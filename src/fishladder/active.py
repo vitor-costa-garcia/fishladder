@@ -65,6 +65,7 @@ class Wrapper:
         self.strategy = strategy
         self.budget = budget
         self.costs = dict(costs)
+        self._last: tuple[dict, dict] | None = None
 
     def query_one(self, x: dict) -> tuple[dict, dict[Output, float], set[Output]]:
         """Predict and decide what to ask for, also returning the utilities of each output.
@@ -77,6 +78,7 @@ class Wrapper:
 
         """
         y_pred = self.model.predict_one(x)
+        self._last = (x, y_pred)
         utilities = self.strategy.utilities_one(x, y_pred, self.costs)
         ask = self.budget.select_one(utilities, self.costs)
         self.budget.update({o: self.costs[o] for o in ask})
@@ -111,5 +113,12 @@ class Wrapper:
         """
         if not y:
             return
+        # The strategy needs the prediction the model made before learning. It is reused from
+        # predict_one when learning from the same x right after, and recomputed otherwise.
+        if self._last is not None and self._last[0] is x:
+            y_pred = self._last[1]
+        else:
+            y_pred = self.model.predict_one(x)
+        self._last = None
         self.model.learn_one(x, y)
-        self.strategy.learn_one(x, y)
+        self.strategy.learn_one(x, y, y_pred)

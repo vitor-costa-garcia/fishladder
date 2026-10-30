@@ -298,3 +298,162 @@ def test_curve_last_value_matches_per_output():
     expected = fl.metrics.per_output(log, AbsError())
     for o in COSTS:
         assert final[o] == pytest.approx(expected[o].get())
+
+
+# Wrapper passes predictions to the strategy
+
+
+class SpyStrategy(fl.strategy.QueryAll):
+    def __init__(self):
+        self.seen = []
+
+    def learn_one(self, x, y, y_pred):
+        self.seen.append(dict(y_pred))
+
+
+def test_wrapper_gives_strategy_prediction_made_before_learning():
+    spy = SpyStrategy()
+    model = fl.active.Wrapper(MeanModel(), spy, fl.budget.Unlimited(), COSTS)
+    stream = [({}, {"a": 1.0, "b": 1.0, "c": 1.0}), ({}, {"a": 3.0, "b": 3.0, "c": 3.0})]
+    for x, y in stream:
+        model.predict_one(x)
+        model.learn_one(x, y)
+    assert spy.seen == [{}, {"a": 1.0, "b": 1.0, "c": 1.0}]
+
+
+def test_wrapper_recomputes_prediction_for_another_x():
+    spy = SpyStrategy()
+    model = fl.active.Wrapper(MeanModel(), spy, fl.budget.Unlimited(), COSTS)
+    model.learn_one({}, {"a": 2.0})
+    model.predict_one({})
+    model.learn_one({}, {"a": 4.0})
+    assert spy.seen == [{}, {"a": 2.0}]
+
+
+# Uncertainty strategies
+
+
+class Constant:
+    """A single-output regressor predicting a fixed value, counting how often it learns."""
+
+    def __init__(self, value=0.0):
+        self.value = value
+        self.n = 0
+
+    def predict_one(self, x):
+        return self.value
+
+    def learn_one(self, x, y):
+        self.n += 1
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [fl.strategy.QueryByCommittee(Constant(), seed=0), fl.strategy.ExpectedError(Constant())],
+)
+def test_unseen_outputs_get_infinite_utility(strategy):
+    strategy.learn_one({}, {"a": 1.0}, {"a": 0.0})
+    utilities = strategy.utilities_one({}, {"a": 0.0}, COSTS)
+    assert utilities["a"] < math.inf
+    assert utilities["b"] == utilities["c"] == math.inf
+
+
+def test_qbc_utility_is_committee_spread():
+    s = fl.strategy.QueryByCommittee(Constant(), n_members=4, seed=0)
+    s.learn_one({}, {"a": 1.0}, {})
+    for i, member in enumerate(s._committees["a"]):
+        member.value = float(i)
+    assert s.utilities_one({}, {}, {"a": 1.0})["a"] == pytest.approx(1.118, abs=1e-3)
+
+
+def test_qbc_online_bagging():
+    regressor = Constant()
+    s = fl.strategy.QueryByCommittee(regressor, n_members=10, seed=0)
+    for _ in range(200):
+        s.learn_one({}, {"a": 1.0}, {})
+    counts = [m.n for m in s._committees["a"]]
+    assert regressor.n == 0
+    assert len(set(counts)) > 1
+    assert sum(counts) / len(counts) == pytest.approx(200, rel=0.1)
+
+
+def test_qbc_is_reproducible():
+    def run():
+        s = fl.strategy.QueryByCommittee(Constant(), seed=3)
+        for _ in range(20):
+            s.learn_one({}, {"a": 1.0}, {})
+        return [m.n for m in s._committees["a"]]
+
+    assert run() == run()
+
+
+def test_qbc_rejects_small_committee():
+    with pytest.raises(ValueError):
+        fl.strategy.QueryByCommittee(Constant(), n_members=1)
+
+
+class Recorder(Constant):
+    def __init__(self):
+        super().__init__()
+        self.targets = []
+
+    def learn_one(self, x, y):
+        self.targets.append(y)
+
+
+def test_expected_error_learns_absolute_errors_of_revealed_outputs():
+    s = fl.strategy.ExpectedError(Recorder())
+    s.learn_one({}, {"a": 1.0, "b": 5.0}, {"a": 3.0})
+    assert s._error_models["a"].targets == [2.0]
+    assert "b" not in s._error_models
+
+
+def test_expected_error_utility_stays_positive():
+    s = fl.strategy.ExpectedError(Constant(-1.0))
+    s.learn_one({}, {"a": 1.0}, {"a": 1.0})
+    assert s.utilities_one({}, {}, {"a": 1.0})["a"] > 0
+
+
+# Variable threshold
+
+
+def test_variable_threshold_queries_high_utilities():
+    rng = random.Random(0)
+    b = fl.budget.VariableThreshold(fl.budget.Unlimited(), step=0.05)
+    queried, skipped = [], []
+    for _ in range(2000):
+        u = rng.random()
+        q = b.select_one({"a": u}, {"a": 1.0})
+        b.update({o: 1.0 for o in q})
+        (queried if q else skipped).append(u)
+    assert queried and skipped
+    assert min(queried) > 0
+    assert sum(queried) / len(queried) > sum(skipped) / len(skipped) + 0.3
+
+
+def test_variable_threshold_only_adapts_when_affordable():
+    b = fl.budget.VariableThreshold(fl.budget.TotalBudget(1.0), step=0.5)
+    b.update({o: 1.0 for o in b.select_one({"a": 1.0}, {"a": 1.0})})
+    assert b.thresholds["a"] == 1.5
+    for _ in range(5):
+        assert b.select_one({"a": 100.0}, {"a": 1.0}) == set()
+        b.update({})
+    assert b.thresholds["a"] == 1.5
+
+
+def test_variable_threshold_never_overspends():
+    log = fl.evaluate.prequential(
+        make_stream(300),
+        MeanModel(),
+        fl.strategy.ExpectedError(Constant(1.0)),
+        fl.budget.VariableThreshold(fl.budget.PerOutput(fl.budget.RateBudget(1.0))),
+        COSTS,
+    )
+    df = log.to_frame()
+    assert df["cost"].sum() <= 300 * 1.0
+
+
+@pytest.mark.parametrize("step", [0.0, 1.0])
+def test_variable_threshold_rejects_bad_step(step):
+    with pytest.raises(ValueError):
+        fl.budget.VariableThreshold(fl.budget.Unlimited(), step=step)
