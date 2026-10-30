@@ -79,7 +79,7 @@ class Wrapper:
         y_pred = self.model.predict_one(x)
         utilities = self.strategy.utilities_one(x, y_pred, self.costs)
         ask = self.budget.select_one(utilities, self.costs)
-        self.budget.update(sum(self.costs[o] for o in ask))
+        self.budget.update({o: self.costs[o] for o in ask})
         return y_pred, utilities, ask
 
     def predict_one(self, x: dict) -> tuple[dict, set[Output]]:

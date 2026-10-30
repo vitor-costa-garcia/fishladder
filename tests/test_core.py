@@ -72,7 +72,7 @@ def test_rate_budget_carries_over():
     b = fl.budget.RateBudget(1.0)
     assert b.select_one({"c": 1.0}, COSTS) == set()
     for _ in range(4):
-        b.update(0.0)
+        b.update({})
     assert b.available == 5.0
     assert b.select_one({"c": 1.0}, COSTS) == {"c"}
 
@@ -85,6 +85,57 @@ def test_budget_rejects_negative(cls):
 
 def test_unlimited():
     assert fl.budget.Unlimited().available == math.inf
+
+
+def run_per_output(budget, n=300):
+    model = fl.active.Wrapper(MeanModel(), fl.strategy.QueryAll(), budget, COSTS)
+    for x, _ in make_stream(n):
+        model.predict_one(x)
+    return budget
+
+
+def test_per_output_does_not_starve_expensive_outputs():
+    shared = run_per_output(fl.budget.RateBudget(0.5))
+    split = run_per_output(fl.budget.PerOutput(fl.budget.RateBudget(0.5)))
+    assert shared.spent == pytest.approx(split.spent, abs=max(COSTS.values()))
+    assert split.spent_per_output["c"] > 0
+
+
+@pytest.mark.parametrize("shares", [None, {"a": 1.0, "b": 2.0, "c": 7.0}])
+def test_per_output_respects_shares(shares):
+    n, rate = 300, 1.2
+    b = run_per_output(fl.budget.PerOutput(fl.budget.RateBudget(rate), shares=shares), n)
+    weights = shares or {o: 1.0 for o in COSTS}
+    for o, w in weights.items():
+        allowed = rate * n * w / sum(weights.values())
+        assert allowed - COSTS[o] <= b.spent_per_output[o] <= allowed
+
+
+def test_per_output_shares_as_costs_equalize_query_rates():
+    b = run_per_output(fl.budget.PerOutput(fl.budget.RateBudget(0.8), shares=COSTS), n=400)
+    n_queries = {o: b.spent_per_output[o] / COSTS[o] for o in COSTS}
+    assert max(n_queries.values()) - min(n_queries.values()) <= 1
+
+
+def test_per_output_with_total_budget():
+    b = run_per_output(fl.budget.PerOutput(fl.budget.TotalBudget(30.0)))
+    for o, cost in COSTS.items():
+        assert 10.0 - cost < b.spent_per_output[o] <= 10.0
+
+
+def test_per_output_does_not_modify_given_budget():
+    inner = fl.budget.RateBudget(1.0)
+    run_per_output(fl.budget.PerOutput(inner))
+    assert inner.spent == 0.0
+    assert inner.n_seen == 0
+
+
+def test_per_output_rejects_bad_shares():
+    with pytest.raises(ValueError):
+        fl.budget.PerOutput(fl.budget.RateBudget(1.0), shares={"a": 0.0})
+    b = fl.budget.PerOutput(fl.budget.RateBudget(1.0), shares={"a": 1.0})
+    with pytest.raises(KeyError):
+        b.select_one({"a": 1.0}, COSTS)
 
 
 # Oracle
@@ -143,7 +194,13 @@ def test_wrapper_ignores_empty_labels():
 
 
 @pytest.mark.parametrize(
-    "budget", [fl.budget.TotalBudget(40.0), fl.budget.RateBudget(1.5), fl.budget.Unlimited()]
+    "budget",
+    [
+        fl.budget.TotalBudget(40.0),
+        fl.budget.RateBudget(1.5),
+        fl.budget.Unlimited(),
+        fl.budget.PerOutput(fl.budget.RateBudget(1.5)),
+    ],
 )
 def test_prequential_never_overspends(budget):
     log = fl.evaluate.prequential(

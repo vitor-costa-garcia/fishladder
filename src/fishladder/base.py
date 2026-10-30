@@ -93,7 +93,9 @@ class BudgetManager(abc.ABC):
     in number of queries.
 
     By default, outputs are picked greedily by decreasing utility, skipping any output that does
-    not fit in what is left of the budget.
+    not fit in what is left of the budget. Since all outputs share the same budget, cheap outputs
+    can keep an expensive one from ever being queried; `budget.PerOutput` avoids this by giving
+    each output its own budget.
 
     """
 
@@ -132,15 +134,15 @@ class BudgetManager(abc.ABC):
                 left -= costs[o]
         return selected
 
-    def update(self, cost: float) -> None:
+    def update(self, queried: Mapping[Output, float]) -> None:
         """Record what was spent on an instance. Must be called once per instance, even when
         nothing was queried.
 
         Parameters
         ----------
-        cost
-            The cost spent on the instance.
+        queried
+            The cost paid for each output queried for the instance.
 
         """
-        self.spent += cost
+        self.spent += sum(queried.values())
         self.n_seen += 1
