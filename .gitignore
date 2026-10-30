@@ -8,3 +8,6 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Docs
+docs/_build/
