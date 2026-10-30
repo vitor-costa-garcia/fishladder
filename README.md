@@ -55,8 +55,9 @@ complements River rather than replacing it.
   labels that never arrive. Queries are paid for when they are made, and
   labels are learned when they arrive.
 - **A tidy experiment log** (`fl.Log`), with one row per instance and output,
-  from which per-output metrics and learning curves indexed by cost are
-  computed (`fl.metrics`).
+  from which per-output and averaged metrics, learning curves indexed by cost,
+  and areas under them are computed (`fl.metrics`), including the relative
+  RMSE (`fl.metrics.RRMSE`) and its average over outputs (aRRMSE).
 - **A synthetic multi-target stream generator** (`fl.synth.MultiTarget`), with
   control over the correlation between outputs, their noise and smoothness, and
   when each one drifts.
