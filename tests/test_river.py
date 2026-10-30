@@ -46,3 +46,17 @@ def test_wrapper_in_river_loop():
         if ask:
             model.learn_one(x, {o: y[o] for o in ask})
     assert model.budget.spent <= 50.0
+
+
+def test_rrmse_matches_river_r2():
+    import math
+
+    dataset = datasets.synth.Friedman(seed=0).take(200)
+    model = preprocessing.StandardScaler() | linear_model.LinearRegression()
+    rrmse, r2 = fl.metrics.RRMSE(), metrics.R2()
+    for x, y in dataset:
+        y_pred = model.predict_one(x)
+        rrmse.update(y, y_pred)
+        r2.update(y, y_pred)
+        model.learn_one(x, y)
+    assert rrmse.get() == pytest.approx(math.sqrt(1 - r2.get()))

@@ -308,6 +308,135 @@ def test_curve_last_value_matches_per_output():
         assert final[o] == pytest.approx(expected[o].get())
 
 
+def rrmse(y_true, y_pred, baseline):
+    metric = fl.metrics.RRMSE(baseline=baseline)
+    for yt, yp in zip(y_true, y_pred):
+        metric.update(yt, yp)
+    return metric.get()
+
+
+def test_rrmse_cumulative_uses_mean_of_all_values():
+    rng = np.random.default_rng(0)
+    y_true, y_pred = rng.normal(size=50), rng.normal(size=50)
+    expected = math.sqrt(((y_true - y_pred) ** 2).sum() / ((y_true - y_true.mean()) ** 2).sum())
+    assert rrmse(y_true, y_pred, "cumulative") == pytest.approx(expected)
+
+
+def test_rrmse_prequential_uses_mean_of_previous_values():
+    rng = np.random.default_rng(0)
+    y_true, y_pred = rng.normal(size=50), rng.normal(size=50)
+    # As in MOA, the mean is 0 before any value is seen
+    means = [0.0] + [y_true[:i].mean() for i in range(1, 50)]
+    expected = math.sqrt(((y_true - y_pred) ** 2).sum() / ((y_true - means) ** 2).sum())
+    assert rrmse(y_true, y_pred, "prequential") == pytest.approx(expected)
+
+
+@pytest.mark.parametrize("baseline", ["cumulative", "prequential"])
+def test_rrmse_weights_count_as_repeats(baseline):
+    weighted = fl.metrics.RRMSE(baseline=baseline)
+    for yt, yp, w in [(1.0, 0.5, 2.0), (3.0, 2.0, 1.0), (-1.0, 0.0, 3.0)]:
+        weighted.update(yt, yp, w)
+    # Prequential differs: repeats see each other in the running mean
+    if baseline == "cumulative":
+        expected = rrmse(
+            [1.0, 1.0, 3.0, -1.0, -1.0, -1.0], [0.5, 0.5, 2.0, 0.0, 0.0, 0.0], baseline
+        )
+        assert weighted.get() == pytest.approx(expected)
+    else:
+        mean_1 = 1.0  # after 1.0 with weight 2
+        mean_2 = 5 / 3
+        squared_error = 2 * 0.25 + 1.0 + 3 * 1.0
+        baseline_error = 2 * 1.0 + (3.0 - mean_1) ** 2 + 3 * (-1.0 - mean_2) ** 2
+        assert weighted.get() == pytest.approx(math.sqrt(squared_error / baseline_error))
+
+
+@pytest.mark.parametrize("baseline", ["cumulative", "prequential"])
+def test_rrmse_is_nan_while_mean_makes_no_error(baseline):
+    metric = fl.metrics.RRMSE(baseline=baseline)
+    assert math.isnan(metric.get())
+    if baseline == "cumulative":
+        metric.update(2.0, 1.0)
+        metric.update(2.0, 1.0)
+        assert math.isnan(metric.get())
+    assert repr(fl.metrics.RRMSE()) == "RRMSE: nan"
+
+
+def test_rrmse_rejects_unknown_baseline():
+    with pytest.raises(ValueError, match="baseline"):
+        fl.metrics.RRMSE(baseline="whole")
+
+
+def test_rrmse_works_with_per_output_and_curve():
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    df = log.to_frame().dropna(subset=["y_pred"])
+    result = fl.metrics.per_output(log, fl.metrics.RRMSE())
+    curve = fl.metrics.curve(log, fl.metrics.RRMSE())
+    final = curve[curve["step"] == 29].set_index("output")["value"]
+    for o in COSTS:
+        rows = df[df["output"] == o]
+        expected = rrmse(rows["y_true"], rows["y_pred"], "cumulative")
+        assert result[o].get() == pytest.approx(expected)
+        assert final[o] == pytest.approx(expected)
+
+
+def test_average_is_mean_over_outputs():
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    per_output = fl.metrics.per_output(log, fl.metrics.RRMSE())
+    expected = statistics.fmean(m.get() for m in per_output.values())
+    assert fl.metrics.average(log, fl.metrics.RRMSE()) == pytest.approx(expected)
+
+    curve = fl.metrics.average_curve(log, fl.metrics.RRMSE(), every=5)
+    assert list(curve.columns) == ["step", "cum_cost", "value"]
+    assert curve["step"].tolist() == [4, 9, 14, 19, 24, 29]
+    assert curve["value"].iloc[-1] == pytest.approx(expected)
+
+
+def test_average_curve_is_nan_until_every_output_is_scored():
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    per_output = fl.metrics.curve(log, AbsError())
+    curve = fl.metrics.average_curve(log, AbsError())
+    some_nan = per_output.groupby("step")["value"].agg(lambda v: v.isna().any())
+    assert curve.set_index("step")["value"].isna().equals(some_nan)
+
+
+def test_area_is_normalized_by_cost_range():
+    from fishladder.metrics import _area
+
+    # Constant curves have their value as area
+    assert _area([0.0, 5.0, 10.0], [2.0, 2.0, 2.0]) == pytest.approx(2.0)
+    # Linear from 1 to 3 averages 2, over unevenly spaced costs too
+    assert _area([10.0, 11.0, 20.0], [1.0, 1.2, 3.0]) == pytest.approx(2.0)
+    # Points where the metric is undefined are skipped
+    assert _area([0.0, 1.0, 2.0, 4.0], [math.nan, 4.0, 2.0, 2.0]) == pytest.approx(7 / 3)
+    # No cost spent while the metric is defined
+    assert math.isnan(_area([0.0, 0.0], [1.0, 2.0]))
+    assert math.isnan(_area([0.0, 1.0], [math.nan, 2.0]))
+
+
+def test_auc_integrates_curve_against_cost():
+    from fishladder.metrics import _area
+
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    result = fl.metrics.auc(log, fl.metrics.RRMSE(), every=3)
+    curve = fl.metrics.curve(log, fl.metrics.RRMSE(), every=3)
+    assert set(result) == set(COSTS)
+    for o in COSTS:
+        c = curve[curve["output"] == o]
+        assert result[o] == pytest.approx(_area(c["cum_cost"].tolist(), c["value"].tolist()))
+
+    average = fl.metrics.average_curve(log, fl.metrics.RRMSE(), every=3)
+    expected = _area(average["cum_cost"].tolist(), average["value"].tolist())
+    assert fl.metrics.auc(log, fl.metrics.RRMSE(), every=3, average=True) == pytest.approx(expected)
+
+
 # Wrapper passes predictions to the strategy
 
 
