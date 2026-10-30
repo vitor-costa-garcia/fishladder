@@ -124,7 +124,7 @@ def iter_prequential(
         return state
 
     for x, y in dataset:
-        y_pred, utilities, ask = learner.query_one(x)
+        y_pred, utilities, probabilities, ask = learner.query_one(x)
         if metric is not None:
             y_scored = {o: y[o] for o in oracle.costs if o in y}
             if all(o in y_pred for o in y_scored):
@@ -141,7 +141,9 @@ def iter_prequential(
             learner.learn_one(x_old, y_old, y_pred=y_pred_old)
 
         if log is not None:
-            log.append_one(n, y, y_pred, utilities, ask, oracle.costs, budget.spent, delays)
+            log.append_one(
+                n, y, y_pred, utilities, ask, oracle.costs, budget.spent, delays, probabilities
+            )
         n_queries += len(ask)
         n += 1
         if n % step == 0:

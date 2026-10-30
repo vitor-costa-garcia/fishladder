@@ -72,6 +72,33 @@ class QueryStrategy(abc.ABC):
 
         """
 
+    def sample_one(
+        self, x: dict, y_pred: dict, costs: Mapping[Output, float]
+    ) -> tuple[dict[Output, float], dict[Output, float]]:
+        """Score each output, along with the probability that it was given a positive utility.
+
+        Randomized strategies draw at random which outputs get a positive utility, and the
+        probabilities let their queries be analysed afterwards, or weighted. They are not the
+        probabilities of being queried, since the budget may not afford every output. By default,
+        the strategy is deterministic and returns no probabilities.
+
+        Parameters
+        ----------
+        x
+            A dictionary of features.
+        y_pred
+            The model's predictions for `x`. Outputs the model has not seen yet may be missing.
+        costs
+            The cost of querying each output. Its keys are the outputs to score.
+
+        Returns
+        -------
+        The utility of querying each output, and the probability of each output whose utility was
+        drawn at random.
+
+        """
+        return self.utilities_one(x, y_pred, costs), {}
+
     def learn_one(self, x: dict, y: dict, y_pred: dict) -> None:
         """Update the strategy with the outputs that were revealed for `x`.
 

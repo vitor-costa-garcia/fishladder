@@ -258,6 +258,7 @@ def test_log_shape():
         "y_true",
         "y_pred",
         "utility",
+        "probability",
         "queried",
         "cost",
         "cum_cost",
@@ -937,3 +938,212 @@ def test_multitarget_accepts_numpy_drift_positions(position):
 def test_multitarget_rejects_fractional_drift_positions():
     with pytest.raises(TypeError):
         fl.synth.MultiTarget(drift={"y0": [10.5]}, seed=0)
+
+
+# Randomized querying
+
+
+class Utilities(fl.base.QueryStrategy):
+    """Give fixed utilities, one per instance, and remember what it learned from."""
+
+    def __init__(self, utilities):
+        self.utilities = iter(utilities)
+        self.learned = []
+
+    def utilities_one(self, x, y_pred, costs):
+        u = next(self.utilities)
+        return {o: u for o in costs}
+
+    def learn_one(self, x, y, y_pred):
+        self.learned.append(y)
+
+
+class Proportional(fl.strategy.Randomized):
+    def probability_one(self, output, utility, recent):
+        return utility / statistics.mean(recent)
+
+
+class Half(fl.strategy.Randomized):
+    def probability_one(self, output, utility, recent):
+        return 0.5
+
+
+def test_randomized_samples_with_its_probabilities():
+    s = Half(Utilities([2.0] * 20_000), seed=0)
+    utilities = [s.sample_one({}, {}, {"a": 1.0}) for _ in range(20_000)]
+    assert utilities[0] == ({"a": 2.0}, {"a": 1.0})  # nothing to compare the first one to
+    assert all(p == {"a": 0.5} for _, p in utilities[1:])
+    assert all(u["a"] in (0.0, 2.0) for u, _ in utilities)
+    assert statistics.mean(u["a"] > 0 for u, _ in utilities) == pytest.approx(0.5, abs=0.01)
+
+
+def test_randomized_rate_rescales_probabilities():
+    rng = random.Random(0)
+    utilities = [rng.expovariate(1.0) for _ in range(5000)]
+    s = Proportional(Utilities(utilities), rate=0.2, seed=0)
+    probabilities = [s.sample_one({}, {}, {"a": 1.0})[1]["a"] for _ in utilities]
+    assert statistics.mean(probabilities) == pytest.approx(0.2, abs=0.02)
+    # The ranking of the utilities is kept
+    assert probabilities[utilities.index(max(utilities))] == 1.0
+
+
+def test_randomized_p_min_and_clipping():
+    class Wild(fl.strategy.Randomized):
+        def probability_one(self, output, utility, recent):
+            return utility
+
+    s = Wild(Utilities([1.0, -3.0, 5.0, 0.0]), p_min=0.1, seed=0)
+    probabilities = [s.sample_one({}, {}, {"a": 1.0})[1]["a"] for _ in range(4)]
+    assert probabilities == [1.0, 0.1, 1.0, 0.1]
+
+
+def test_randomized_infinite_utilities_are_always_sampled_and_not_kept():
+    s = Proportional(Utilities([math.inf, math.inf, 1.0, 3.0]), seed=0)
+    assert s.sample_one({}, {}, {"a": 1.0}) == ({"a": math.inf}, {"a": 1.0})
+    assert s.sample_one({}, {}, {"a": 1.0}) == ({"a": math.inf}, {"a": 1.0})
+    # The first finite utility has nothing to compare to, so inf was not kept in the window
+    assert s.sample_one({}, {}, {"a": 1.0})[1] == {"a": 1.0}
+    assert s.sample_one({}, {}, {"a": 1.0})[1] == {"a": 1.0}  # 3 / 1, clipped
+
+
+def test_randomized_window_is_bounded():
+    s = Proportional(Utilities([1.0] * 10 + [2.0]), window=3, seed=0)
+    for _ in range(10):
+        s.sample_one({}, {}, {"a": 1.0})
+    assert list(s._utilities["a"]) == [1.0, 1.0, 1.0]
+
+
+def test_randomized_sampled_outputs_stay_queryable():
+    s = Half(Utilities([0.0] * 100), seed=0)
+    utilities = [s.sample_one({}, {}, {"a": 1.0})[0]["a"] for _ in range(100)]
+    assert all(u == 0.0 or u > 0 for u in utilities)
+    assert any(u > 0 for u in utilities)
+
+
+def test_randomized_outputs_are_independent_of_order():
+    a = Half(Utilities([1.0] * 50), seed=3)
+    b = Half(Utilities([1.0] * 50), seed=3)
+    ua = [a.utilities_one({}, {}, {"a": 1.0, "b": 1.0}) for _ in range(50)]
+    ub = [b.utilities_one({}, {}, {"b": 1.0, "a": 1.0}) for _ in range(50)]
+    assert ua == ub
+    assert [u["a"] for u in ua] != [u["b"] for u in ua]
+
+
+def test_randomized_passes_labels_to_its_strategy():
+    base = Utilities([1.0])
+    Half(base).learn_one({}, {"a": 1.0}, {"a": 0.0})
+    assert base.learned == [{"a": 1.0}]
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"window": 0}, {"rate": 0.0}, {"rate": 1.5}, {"p_min": -0.1}, {"p_min": 2}]
+)
+def test_randomized_validation(kwargs):
+    with pytest.raises(ValueError):
+        Half(fl.strategy.QueryAll(), **kwargs)
+
+
+def test_split_explores_with_its_probability():
+    s = fl.strategy.Split(Utilities([0.5] * 20_000), p=0.1, seed=0)
+    utilities = [s.utilities_one({}, {}, {"a": 1.0})["a"] for _ in range(20_000)]
+    assert set(utilities) == {0.5, math.inf}
+    assert statistics.mean(u == math.inf for u in utilities) == pytest.approx(0.1, abs=0.01)
+
+
+def test_split_probabilities():
+    assert fl.strategy.Split(fl.strategy.QueryAll(), p=0.1).sample_one({}, {}, {"a": 1.0})[1] == {}
+    s = fl.strategy.Split(fl.strategy.RandomPerOutput(p=0.5), p=0.2)
+    assert s.sample_one({}, {}, {"a": 1.0})[1] == {"a": pytest.approx(0.6)}
+
+
+def test_split_passes_labels_to_its_strategy():
+    base = Utilities([1.0])
+    fl.strategy.Split(base).learn_one({}, {"a": 1.0}, {"a": 0.0})
+    assert base.learned == [{"a": 1.0}]
+
+
+def test_split_explored_outputs_do_not_move_the_threshold():
+    s = fl.strategy.Split(Utilities([0.5] * 200), p=0.3, seed=0)
+    b = fl.budget.VariableThreshold(fl.budget.Unlimited(), step=0.1)
+    queried = []
+    for _ in range(200):
+        u = s.utilities_one({}, {}, {"a": 1.0})
+        ask = b.select_one(u, {"a": 1.0})
+        b.update({o: 1.0 for o in ask})
+        queried.append((u["a"], bool(ask)))
+    assert all(q for u, q in queried if u == math.inf)
+    # Without exploration, a constant utility is queried about every other time
+    exploited = [q for u, q in queried if u != math.inf]
+    assert 0.3 < statistics.mean(exploited) < 0.7
+
+
+def test_probabilities_are_logged():
+    log = fl.evaluate.prequential(
+        make_stream(20),
+        MeanModel(),
+        Half(fl.strategy.QueryAll(), seed=0),
+        fl.budget.Unlimited(),
+        COSTS,
+    )
+    df = log.to_frame()
+    assert (df.query("step > 0")["probability"] == 0.5).all()
+    assert (df["queried"] == (df["utility"] > 0)).all()
+
+    log = fl.evaluate.prequential(
+        make_stream(5), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    assert log.to_frame()["probability"].isna().all()
+
+
+def test_random_per_output_reports_its_probability():
+    s = fl.strategy.RandomPerOutput(p=0.3, seed=0)
+    assert s.sample_one({}, {}, {"a": 1.0, "b": 1.0})[1] == {"a": 0.3, "b": 0.3}
+
+
+def test_wrapper_query_one_returns_probabilities():
+    model = fl.active.Wrapper(
+        MeanModel(), fl.strategy.RandomPerOutput(p=0.3, seed=0), fl.budget.Unlimited(), COSTS
+    )
+    _, utilities, probabilities, ask = model.query_one({})
+    assert probabilities == {o: 0.3 for o in COSTS}
+    assert ask == {o for o, u in utilities.items() if u > 0}
+
+
+def test_variable_threshold_randomize_queries_below_threshold():
+    def run(randomize):
+        b = fl.budget.VariableThreshold(
+            fl.budget.Unlimited(), step=0.01, randomize=randomize, seed=0
+        )
+        rng = random.Random(0)
+        queried = []
+        for t in range(3000):
+            # Utilities collapse after the first 1000 instances, as when a model is confidently wrong
+            u = rng.uniform(1, 2) if t < 1000 else rng.uniform(0.01, 0.02)
+            ask = b.select_one({"a": u}, {"a": 1.0})
+            b.update({o: 1.0 for o in ask})
+            queried.append(bool(ask))
+        return queried
+
+    plain, randomized = run(0.0), run(1.0)
+    # The plain threshold takes a while to come down, the randomized one keeps querying
+    assert sum(plain[1000:1100]) == 0
+    assert sum(randomized[1000:1100]) > 10
+
+
+def test_variable_threshold_randomize_is_reproducible():
+    def run(seed):
+        b = fl.budget.VariableThreshold(fl.budget.Unlimited(), randomize=1.0, seed=seed)
+        out = []
+        for t in range(100):
+            ask = b.select_one({"a": 1.0 + t % 3, "b": 2.0}, {"a": 1.0, "b": 1.0})
+            b.update({o: 1.0 for o in ask})
+            out.append(sorted(ask))
+        return out
+
+    assert run(1) == run(1)
+    assert run(1) != run(2)
+
+
+def test_variable_threshold_randomize_validation():
+    with pytest.raises(ValueError):
+        fl.budget.VariableThreshold(fl.budget.Unlimited(), randomize=-1)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import typing
 from collections.abc import Iterable, Mapping
 
@@ -18,6 +19,7 @@ COLUMNS = (
     "y_true",
     "y_pred",
     "utility",
+    "probability",
     "queried",
     "cost",
     "cum_cost",
@@ -44,6 +46,9 @@ class Log:
         predict this output yet.
     utility
         The utility given by the query strategy.
+    probability
+        For randomized strategies, the probability that the output was given a positive
+        utility, which the budget may still not afford. NaN for deterministic strategies.
     queried
         Whether the output was queried.
     cost
@@ -78,14 +83,17 @@ class Log:
         costs: Mapping[Output, float],
         cum_cost: float,
         delays: Mapping[Output, float] | None = None,
+        probabilities: Mapping[Output, float] | None = None,
     ) -> None:
         """Record one instance. Every output in `costs` gets a row.
 
-        `delays` gives the delay of each queried output, which defaults to 0.
+        `delays` gives the delay of each queried output, which defaults to 0. `probabilities`
+        gives the probabilities of randomized strategies, which default to NaN.
 
         """
         queried = set(queried)
         delays = delays or {}
+        probabilities = probabilities or {}
         for o in costs:
             q = o in queried
             self._rows.append(
@@ -95,6 +103,7 @@ class Log:
                     y_true.get(o),
                     y_pred.get(o),
                     utilities.get(o, 0.0),
+                    probabilities.get(o, math.nan),
                     q,
                     costs[o] if q else 0.0,
                     cum_cost,

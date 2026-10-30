@@ -41,7 +41,13 @@ complements River rather than replacing it.
   - Budgets (`fl.budget`), measured in cost rather than in number of queries:
     `TotalBudget`, `RateBudget`, `Unlimited`, `PerOutput` to give each output
     its own share, and `VariableThreshold` to only query outputs whose utility
-    is high compared to their recent ones.
+    is high compared to their recent ones, optionally with a randomized
+    threshold.
+- **Randomized querying**, which makes active learning more robust to drift.
+  `fl.strategy.Split` mixes any strategy with random exploration, and
+  `fl.strategy.Randomized` turns any strategy's utilities into query
+  probabilities, so that new randomized strategies only define how. The
+  probabilities are kept in the log.
 - **Prequential evaluation** (`fl.evaluate`). Test-then-train, with
   predictions scored on every output, queried or not.
 - **Delayed labels.** A delay per output, constant or drawn at random, and

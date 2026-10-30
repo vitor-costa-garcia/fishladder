@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import random
 from collections.abc import Mapping
 
 from fishladder.base import BudgetManager, Output
@@ -186,6 +187,12 @@ class VariableThreshold(BudgetManager):
     Each threshold starts at the first finite utility seen for its output. Infinite utilities
     always pass the threshold and do not change it.
 
+    With `randomize`, each utility is compared to the threshold multiplied by a random factor
+    drawn from a normal distribution with mean 1 and standard deviation `randomize`. This is the
+    randomized variable uncertainty strategy of Žliobaitė et al. (2014): instances whose utility
+    is below the threshold can still be queried, which helps noticing drifts where the strategy
+    is confident. The threshold is adapted in the same way.
+
     Parameters
     ----------
     budget
@@ -193,6 +200,11 @@ class VariableThreshold(BudgetManager):
         It is updated along with this manager.
     step
         The relative amount by which thresholds are raised or lowered.
+    randomize
+        The standard deviation of the random factor applied to thresholds. Žliobaitė et al.
+        (2014) use 1. With 0, thresholds are not randomized.
+    seed
+        Random number generator seed for reproducibility, used with `randomize`.
 
     References
     ----------
@@ -215,14 +227,33 @@ class VariableThreshold(BudgetManager):
 
     """
 
-    def __init__(self, budget: BudgetManager, step: float = 0.01):
+    def __init__(
+        self,
+        budget: BudgetManager,
+        step: float = 0.01,
+        randomize: float = 0.0,
+        seed: int | None = None,
+    ):
         super().__init__()
         if not 0 < step < 1:
             raise ValueError(f"step must be between 0 and 1, got {step}")
+        if randomize < 0:
+            raise ValueError(f"randomize must be non-negative, got {randomize}")
         self.budget = budget
         self.step = step
+        self.randomize = randomize
+        self.seed = seed
         self.thresholds: dict[Output, float] = {}
         self._affordable: dict[Output, float] = {}
+        self._rngs: dict[Output, random.Random] = {}
+
+    def _factor(self, o: Output) -> float:
+        if not self.randomize:
+            return 1.0
+        if o not in self._rngs:
+            # One generator per output, seeded from its name, as in the strategies
+            self._rngs[o] = random.Random(None if self.seed is None else f"{self.seed}:{o!r}")
+        return self._rngs[o].gauss(1.0, self.randomize)
 
     @property
     def available(self) -> float:
@@ -239,7 +270,9 @@ class VariableThreshold(BudgetManager):
             if o not in self.thresholds and math.isfinite(u):
                 self.thresholds[o] = u
         passing = {
-            o: u for o, u in self._affordable.items() if u >= self.thresholds.get(o, -math.inf)
+            o: u
+            for o, u in self._affordable.items()
+            if u >= self.thresholds.get(o, -math.inf) * self._factor(o)
         }
         return self.budget.select_one(passing, costs)
 
