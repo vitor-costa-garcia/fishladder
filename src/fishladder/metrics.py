@@ -8,6 +8,7 @@ Metrics are River-style objects with `update(y_true, y_pred)` and `get()` method
 from __future__ import annotations
 
 import copy
+import math
 import typing
 
 from fishladder.base import Output
@@ -62,11 +63,13 @@ def curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
     metric
         A River-style single-output metric, such as `river.metrics.MAE()`. It is not modified.
     every
-        Record the value of the metric every `every` instances.
+        Record the value of the metric every `every` instances, and after the last one.
 
     Returns
     -------
-    A DataFrame with columns `step`, `cum_cost`, `output` and `value`.
+    A DataFrame with columns `step`, `cum_cost`, `output` and `value`. The value is NaN until
+    the output has been predicted at least once, which can take a while when its labels are
+    delayed.
 
     """
     import pandas as pd
@@ -75,13 +78,25 @@ def curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
         raise ValueError(f"every must be at least 1, got {every}")
 
     metrics: dict[Output, typing.Any] = {}
+    scored: set[Output] = set()
     records = []
+    last: dict[str, typing.Any] | None = None
+
+    def value(o: Output) -> float:
+        # River metrics return 0 before any update, which would look like a perfect score
+        return metrics[o].get() if o in scored else math.nan
+
     for row in log:
         o = row["output"]
         if o not in metrics:
             metrics[o] = copy.deepcopy(metric)
         if row["y_true"] is not None and row["y_pred"] is not None:
             metrics[o].update(row["y_true"], row["y_pred"])
+            scored.add(o)
         if (row["step"] + 1) % every == 0:
-            records.append((row["step"], row["cum_cost"], o, metrics[o].get()))
+            records.append((row["step"], row["cum_cost"], o, value(o)))
+        last = row
+    if last is not None and (last["step"] + 1) % every != 0:
+        for o in metrics:
+            records.append((last["step"], last["cum_cost"], o, value(o)))
     return pd.DataFrame(records, columns=["step", "cum_cost", "output", "value"])

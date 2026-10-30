@@ -6,6 +6,7 @@ import statistics
 import subprocess
 import sys
 
+import numpy as np
 import pytest
 
 import fishladder as fl
@@ -398,7 +399,7 @@ def test_qbc_is_reproducible():
 
 def test_qbc_needs_min_labels_before_trusting_committee():
     s = fl.strategy.QueryByCommittee(Constant(), min_labels=3, seed=0)
-    for expected in (math.inf, math.inf, math.inf, 0.0):
+    for expected in (math.inf, math.inf, math.inf, s._floor):
         assert s.utilities_one({}, {}, {"a": 1.0})["a"] == expected
         s.learn_one({}, {"a": 1.0}, {})
 
@@ -797,3 +798,142 @@ def test_wrapper_learns_from_given_prediction():
     model.learn_one({"t": 1}, {"a": 5.0})
     model.learn_one(x_old, {"a": 1.0}, y_pred=y_pred_old)
     assert spy.seen == [{}, {}]
+
+
+# Regression tests from the review
+
+
+@pytest.mark.parametrize("make", [np.int64, np.int32, np.float64])
+def test_numpy_delays_are_accepted(make):
+    model = MeanModel()
+    log = fl.evaluate.prequential(
+        counting_stream(10),
+        model,
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        COSTS,
+        delay=lambda x, y, o: make(2),
+    )
+    assert len(model.learned) == 8
+    assert (log.to_frame()["delay"] == 2).all()
+
+
+def test_numpy_delays_from_a_generator():
+    rng = np.random.default_rng(0)
+    log = fl.evaluate.prequential(
+        counting_stream(50),
+        MeanModel(),
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        COSTS,
+        delay=lambda x, y, o: rng.integers(0, 10),
+    )
+    assert log.to_frame()["delay"].between(0, 9).all()
+
+
+@pytest.mark.parametrize("delay", [True, np.float64(1.5), np.int64(-1)])
+def test_delay_rejects_bools_and_bad_numpy_values(delay):
+    with pytest.raises(ValueError):
+        fl.evaluate.prequential(
+            counting_stream(5),
+            MeanModel(),
+            fl.strategy.QueryAll(),
+            fl.budget.Unlimited(),
+            COSTS,
+            delay=delay,
+        )
+
+
+def test_curve_is_nan_before_first_prediction():
+    log = fl.evaluate.prequential(
+        counting_stream(30),
+        MeanModel(),
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        COSTS,
+        delay={"a": 0, "b": 10, "c": 0},
+    )
+    curve = fl.metrics.curve(log, AbsError()).query("output == 'b'").set_index("step")["value"]
+    # b is first predicted at step 11, once the label of step 0 arrived after step 10
+    assert curve.loc[:10].isna().all()
+    assert curve.loc[11:].notna().all()
+
+
+def test_curve_ends_with_last_step():
+    log = fl.evaluate.prequential(
+        make_stream(25), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    curve = fl.metrics.curve(log, AbsError(), every=10)
+    assert sorted(set(curve["step"])) == [9, 19, 24]
+    last = curve[curve["step"] == 24].set_index("output")["value"]
+    expected = {o: m.get() for o, m in fl.metrics.per_output(log, AbsError()).items()}
+    assert last.to_dict() == pytest.approx(expected)
+
+
+def test_curve_with_every_dividing_length_has_no_duplicate_last_step():
+    log = fl.evaluate.prequential(
+        make_stream(20), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    curve = fl.metrics.curve(log, AbsError(), every=10)
+    assert len(curve) == 2 * len(COSTS)
+
+
+def test_qbc_never_rules_out_an_output_when_members_agree():
+    s = fl.strategy.QueryByCommittee(Constant(1.0), n_members=3, min_labels=1, seed=0)
+    s.learn_one({}, {"a": 1.0}, {})
+    utility = s.utilities_one({}, {}, {"a": 1.0})["a"]
+    assert 0 < utility < 1e-6
+    assert fl.budget.Unlimited().select_one({"a": utility}, {"a": 1.0}) == {"a"}
+
+
+class SpyMetric:
+    def __init__(self):
+        self.seen = []
+
+    def update(self, y_true, y_pred):
+        self.seen.append(set(y_true))
+
+
+def test_metric_ignores_outputs_without_cost():
+    def stream(n):
+        for t in range(n):
+            yield {}, {"a": 1.0, "b": 2.0, "c": 3.0, "extra": 4.0}
+
+    metric = SpyMetric()
+    fl.evaluate.prequential(
+        stream(5), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, metric=metric
+    )
+    # Step 0 has no prediction yet, every later step is scored on the costed outputs only
+    assert metric.seen == [set(COSTS)] * 4
+
+
+def test_metric_ignores_extra_outputs_with_river():
+    from river import linear_model, metrics, multioutput
+
+    def stream(n):
+        for t in range(n):
+            x = {"x": t % 10}
+            yield x, {"a": x["x"], "b": 2 * x["x"], "extra": 1.0}
+
+    metric = metrics.multioutput.PerOutput(metrics.MAE())
+    fl.evaluate.prequential(
+        stream(50),
+        multioutput.RegressorChain(linear_model.LinearRegression(), order=["a", "b"]),
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        {"a": 1.0, "b": 1.0},
+        metric=metric,
+    )
+    assert set(metric.metrics) == {"a", "b"}
+
+
+@pytest.mark.parametrize("position", [np.int64(10), [np.int32(10), 20]])
+def test_multitarget_accepts_numpy_drift_positions(position):
+    dataset = fl.synth.MultiTarget(drift={"y0": position}, seed=0)
+    assert dataset.drift["y0"][0] == 10
+    assert all(type(p) is int for p in dataset.drift["y0"])
+
+
+def test_multitarget_rejects_fractional_drift_positions():
+    with pytest.raises(TypeError):
+        fl.synth.MultiTarget(drift={"y0": [10.5]}, seed=0)

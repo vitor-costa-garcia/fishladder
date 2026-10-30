@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import numbers
 import typing
 from collections.abc import Callable, Mapping
 
@@ -18,11 +19,13 @@ Delay = int | float | Mapping[Output, float] | Callable[[dict, dict, Output], fl
 
 
 def _check_delay(d: typing.Any, o: Output) -> float:
-    if d != math.inf and not (isinstance(d, (int, float)) and d >= 0 and d == int(d)):
+    # numbers.Real also accepts NumPy numbers, but bool is an int that is not meant as a delay
+    is_number = isinstance(d, numbers.Real) and not isinstance(d, bool)
+    if not (is_number and (d == math.inf or (d >= 0 and d == int(d)))):
         raise ValueError(
             f"delay of output {o!r} must be a non-negative whole number or inf, got {d!r}"
         )
-    return d if d == math.inf else int(d)
+    return math.inf if d == math.inf else int(d)
 
 
 def _delay_function(
@@ -83,8 +86,9 @@ def iter_prequential(
     costs
         The cost of querying each output.
     metric
-        An optional River-style multi-output metric, updated with `metric.update(y, y_pred)`.
-        It is only updated once the model can predict every output of an instance.
+        An optional River-style multi-output metric, updated with `metric.update(y, y_pred)` on
+        the outputs that have a cost, once the model can predict all of them. Other outputs of
+        the stream are ignored.
     step
         Yield results every `step` instances. The final results are always yielded.
     log
@@ -121,8 +125,10 @@ def iter_prequential(
 
     for x, y in dataset:
         y_pred, utilities, ask = learner.query_one(x)
-        if metric is not None and all(o in y_pred for o in y):
-            metric.update(y, y_pred)
+        if metric is not None:
+            y_scored = {o: y[o] for o in oracle.costs if o in y}
+            if all(o in y_pred for o in y_scored):
+                metric.update(y_scored, y_pred)
 
         y_revealed, _ = oracle.reveal(y, ask)
         # Draw the delays in the order of the costs, so that random delays are reproducible

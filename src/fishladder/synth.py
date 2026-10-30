@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import itertools
+import numbers
+import operator
 from collections.abc import Iterable, Iterator, Mapping
 
 import numpy as np
@@ -110,10 +112,14 @@ class MultiTarget:
         self.drift: dict[str, list[int]] = {o: [] for o in self.outputs}
         for o, positions in (drift or {}).items():
             self._check_output("drift", o)
-            positions = [positions] if isinstance(positions, int) else list(positions)
-            if any(p < 0 for p in positions):
+            # operator.index accepts any integer, such as NumPy's, and rejects fractions
+            if isinstance(positions, (int, numbers.Integral)):
+                at = [operator.index(positions)]
+            else:
+                at = [operator.index(p) for p in positions]
+            if any(p < 0 for p in at):
                 raise ValueError(f"drift positions of output {o!r} must be non-negative")
-            self.drift[o] = sorted(positions)
+            self.drift[o] = sorted(at)
         self.seed = seed
         self._draw_functions()
 

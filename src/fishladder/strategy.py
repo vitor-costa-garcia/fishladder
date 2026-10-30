@@ -91,7 +91,9 @@ class QueryByCommittee(QueryStrategy):
     Outputs with fewer than `min_labels` revealed labels get an infinite utility, so that they
     are queried first. A committee trained on a handful of labels can agree while being wrong,
     for instance when all its members learned from the same single label, and that output would
-    then rarely be queried again.
+    then rarely be queried again. For the same reason, utilities are floored at a tiny positive
+    value: members that agree exactly would otherwise rule the output out for good, since the
+    committee only learns from queried labels.
 
     Utilities of different outputs are in different units. When outputs share a budget, they are
     compared directly, so per-output budgets (`budget.PerOutput`) are usually a better fit.
@@ -126,6 +128,8 @@ class QueryByCommittee(QueryStrategy):
 
     """
 
+    _floor = 1e-12
+
     def __init__(
         self,
         regressor: typing.Any,
@@ -154,7 +158,8 @@ class QueryByCommittee(QueryStrategy):
                 utilities[o] = math.inf
             else:
                 committee = self._committees[o]
-                utilities[o] = statistics.pstdev(m.predict_one(x) for m in committee)
+                spread = statistics.pstdev(m.predict_one(x) for m in committee)
+                utilities[o] = max(spread, self._floor)
         return utilities
 
     def learn_one(self, x: dict, y: dict, y_pred: dict) -> None:
