@@ -4,16 +4,23 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fishladder"
-version = "0.0.1"
-description = "Evaluation framework for online multi-target active learning on data streams."
+version = "0.1.0"
+description = "Evaluation framework for online multi-output active learning on data streams."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "BSD-3-Clause"
 license-files = ["LICENSE"]
 authors = [{ name = "Vitor da Costa Garcia", email = "vitorcostagarcia2006@gmail.com" }]
-keywords = ["active-learning", "data-streams", "online-learning", "multi-target-regression"]
+keywords = [
+    "active-learning",
+    "data-streams",
+    "online-learning",
+    "multi-output",
+    "multi-target-regression",
+    "river",
+]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
@@ -24,8 +31,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+river = ["river"]
 plots = ["matplotlib"]
-dev = ["pytest", "pytest-cov", "ruff", "mypy"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "pandas-stubs", "river"]
 
 [project.urls]
 Homepage = "https://github.com/vitor-costa-garcia/fishladder"
@@ -38,4 +46,8 @@ packages = ["src/fishladder"]
 line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "src"]
+addopts = "--doctest-modules"
+
+[tool.mypy]
+ignore_missing_imports = true

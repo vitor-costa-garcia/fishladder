@@ -1,0 +1,131 @@
+"""River-style active learning wrapper."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from fishladder.base import BudgetManager, Model, Output, QueryStrategy
+
+__all__ = ["Wrapper"]
+
+
+class Wrapper:
+    """Wrap a multi-output model so that it decides which outputs to ask for.
+
+    This mirrors `river.active`: `predict_one` returns the prediction along with what to ask for,
+    which makes it easy to drop into an existing River loop. The difference is that it returns a
+    set of outputs instead of a boolean, and that queries are paid for with a budget.
+
+    Each call to `predict_one` is a query decision: the cost of the outputs it asks for is
+    charged to the budget right away, whether or not their labels are passed to `learn_one`.
+
+    Parameters
+    ----------
+    model
+        A multi-output model, such as any River multi-output model.
+    strategy
+        The query strategy.
+    budget
+        The budget manager.
+    costs
+        The cost of querying each output.
+
+    Examples
+    --------
+
+    >>> from river import linear_model, multioutput
+    >>> import fishladder as fl
+
+    >>> model = fl.active.Wrapper(
+    ...     model=multioutput.RegressorChain(linear_model.LinearRegression(), order=["a", "b"]),
+    ...     strategy=fl.strategy.QueryAll(),
+    ...     budget=fl.budget.TotalBudget(4.0),
+    ...     costs={"a": 1.0, "b": 3.0},
+    ... )
+
+    >>> stream = [({"x": 1.0}, {"a": 1.0, "b": 2.0}), ({"x": 2.0}, {"a": 2.0, "b": 4.0})]
+    >>> for x, y in stream:
+    ...     y_pred, ask = model.predict_one(x)
+    ...     if ask:
+    ...         model.learn_one(x, {o: y[o] for o in ask})
+
+    >>> model.budget.spent
+    4.0
+
+    """
+
+    def __init__(
+        self,
+        model: Model,
+        strategy: QueryStrategy,
+        budget: BudgetManager,
+        costs: Mapping[Output, float],
+    ):
+        self.model = model
+        self.strategy = strategy
+        self.budget = budget
+        self.costs = dict(costs)
+        self._last: tuple[dict, dict] | None = None
+
+    def query_one(
+        self, x: dict
+    ) -> tuple[dict, dict[Output, float], dict[Output, float], set[Output]]:
+        """Predict and decide what to ask for, also returning what the decision was based on.
+
+        This charges the budget, exactly like `predict_one`.
+
+        Returns
+        -------
+        The predictions, the utility of each output, the probabilities given by randomized
+        strategies (see `QueryStrategy.sample_one`), and the outputs to ask for.
+
+        """
+        y_pred = self.model.predict_one(x)
+        self._last = (x, y_pred)
+        utilities, probabilities = self.strategy.sample_one(x, y_pred, self.costs)
+        ask = self.budget.select_one(utilities, self.costs)
+        self.budget.update({o: self.costs[o] for o in ask})
+        return y_pred, utilities, probabilities, ask
+
+    def predict_one(self, x: dict) -> tuple[dict, set[Output]]:
+        """Predict the outputs of `x` and decide which of them to ask for.
+
+        Parameters
+        ----------
+        x
+            A dictionary of features.
+
+        Returns
+        -------
+        The predictions, and the outputs whose labels should be asked for.
+
+        """
+        y_pred, _, _, ask = self.query_one(x)
+        return y_pred, ask
+
+    def learn_one(self, x: dict, y: dict, y_pred: dict | None = None) -> None:
+        """Learn from the outputs that were revealed for `x`.
+
+        Parameters
+        ----------
+        x
+            A dictionary of features.
+        y
+            The revealed outputs. It may contain only some of the outputs.
+        y_pred
+            The prediction returned by `predict_one` when `x` was queried. Pass it when labels
+            arrive late, after the model learned from other instances: the strategy then learns
+            from the prediction it made the query with. By default, the prediction is reused if
+            `x` is the last instance passed to `predict_one`, and recomputed otherwise.
+
+        """
+        if not y:
+            return
+        if y_pred is None:
+            if self._last is not None and self._last[0] is x:
+                y_pred = self._last[1]
+            else:
+                y_pred = self.model.predict_one(x)
+        self._last = None
+        self.model.learn_one(x, y)
+        self.strategy.learn_one(x, y, y_pred)
