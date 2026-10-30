@@ -1,0 +1,243 @@
+import math
+import random
+
+import pytest
+
+import fishladder as fl
+
+
+class MeanModel:
+    """Predicts the running mean of each output it has seen, and records what it learned from."""
+
+    def __init__(self):
+        self.sums = {}
+        self.counts = {}
+        self.learned = []
+
+    def predict_one(self, x):
+        return {o: self.sums[o] / self.counts[o] for o in self.sums}
+
+    def learn_one(self, x, y):
+        self.learned.append(dict(y))
+        for o, v in y.items():
+            self.sums[o] = self.sums.get(o, 0.0) + v
+            self.counts[o] = self.counts.get(o, 0) + 1
+
+
+class AbsError:
+    """A minimal River-style metric."""
+
+    def __init__(self):
+        self.total = 0.0
+        self.n = 0
+
+    def update(self, y_true, y_pred):
+        self.total += abs(y_true - y_pred)
+        self.n += 1
+
+    def get(self):
+        return self.total / self.n if self.n else 0.0
+
+
+def make_stream(n, seed=0):
+    rng = random.Random(seed)
+    for i in range(n):
+        yield {"i": i}, {"a": rng.random(), "b": rng.random(), "c": rng.random()}
+
+
+COSTS = {"a": 1.0, "b": 2.0, "c": 5.0}
+
+
+def test_model_satisfies_protocol():
+    assert isinstance(MeanModel(), fl.base.Model)
+
+
+# Budget
+
+
+def test_select_is_greedy_by_utility_and_skips_unaffordable():
+    b = fl.budget.TotalBudget(6.0)
+    utilities = {"a": 0.1, "b": 0.5, "c": 0.9}
+    # c (5.0) is picked first, b (2.0) no longer fits, a (1.0) still does
+    assert b.select_one(utilities, COSTS) == {"a", "c"}
+    assert b.spent == 0.0
+
+
+def test_select_ignores_non_positive_utilities():
+    b = fl.budget.Unlimited()
+    assert b.select_one({"a": 0.0, "b": -1.0, "c": 0.2}, COSTS) == {"c"}
+
+
+def test_rate_budget_carries_over():
+    b = fl.budget.RateBudget(1.0)
+    assert b.select_one({"c": 1.0}, COSTS) == set()
+    for _ in range(4):
+        b.update(0.0)
+    assert b.available == 5.0
+    assert b.select_one({"c": 1.0}, COSTS) == {"c"}
+
+
+@pytest.mark.parametrize("cls", [fl.budget.TotalBudget, fl.budget.RateBudget])
+def test_budget_rejects_negative(cls):
+    with pytest.raises(ValueError):
+        cls(-1.0)
+
+
+def test_unlimited():
+    assert fl.budget.Unlimited().available == math.inf
+
+
+# Oracle
+
+
+def test_oracle_charges_requested_outputs_even_if_missing():
+    oracle = fl.Oracle(COSTS)
+    y, cost = oracle.reveal({"a": 1.0}, ["a", "c"])
+    assert y == {"a": 1.0}
+    assert cost == 6.0
+
+
+def test_oracle_rejects_negative_cost():
+    with pytest.raises(ValueError):
+        fl.Oracle({"a": -1.0})
+
+
+# Strategies
+
+
+def test_random_per_output_is_reproducible():
+    u1 = [fl.strategy.RandomPerOutput(0.5, seed=1).utilities_one({}, {}, COSTS) for _ in range(3)]
+    u2 = [fl.strategy.RandomPerOutput(0.5, seed=1).utilities_one({}, {}, COSTS) for _ in range(3)]
+    assert u1 == u2
+
+
+@pytest.mark.parametrize("p", [-0.1, 1.1])
+def test_random_per_output_rejects_bad_p(p):
+    with pytest.raises(ValueError):
+        fl.strategy.RandomPerOutput(p)
+
+
+# Wrapper
+
+
+def test_wrapper_charges_budget_at_predict_time():
+    model = fl.active.Wrapper(
+        MeanModel(), fl.strategy.QueryAll(), fl.budget.TotalBudget(3.0), COSTS
+    )
+    y_pred, ask = model.predict_one({})
+    assert y_pred == {}
+    assert ask == {"a", "b"}
+    assert model.budget.spent == 3.0
+    _, ask = model.predict_one({})
+    assert ask == set()
+
+
+def test_wrapper_ignores_empty_labels():
+    inner = MeanModel()
+    model = fl.active.Wrapper(inner, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS)
+    model.learn_one({}, {})
+    assert inner.learned == []
+
+
+# Evaluation
+
+
+@pytest.mark.parametrize(
+    "budget", [fl.budget.TotalBudget(40.0), fl.budget.RateBudget(1.5), fl.budget.Unlimited()]
+)
+def test_prequential_never_overspends(budget):
+    log = fl.evaluate.prequential(
+        make_stream(100), MeanModel(), fl.strategy.RandomPerOutput(0.7, seed=0), budget, COSTS
+    )
+    df = log.to_frame()
+    per_step = df.groupby("step")["cost"].sum()
+    assert per_step.cumsum().tolist() == pytest.approx(df.groupby("step")["cum_cost"].first())
+    if isinstance(budget, fl.budget.TotalBudget):
+        assert budget.spent <= budget.total
+    if isinstance(budget, fl.budget.RateBudget):
+        assert (per_step.cumsum() <= budget.rate * (per_step.index + 1) + 1e-9).all()
+
+
+def test_prequential_model_learns_only_revealed_outputs():
+    model = MeanModel()
+    log = fl.evaluate.prequential(
+        make_stream(50),
+        model,
+        fl.strategy.RandomPerOutput(0.3, seed=0),
+        fl.budget.Unlimited(),
+        COSTS,
+    )
+    df = log.to_frame()
+    queried = df[df["queried"]]
+    learned = [(o, v) for y in model.learned for o, v in y.items()]
+    assert sorted(learned) == sorted(zip(queried["output"], queried["y_true"]))
+
+
+def test_prequential_predicts_before_learning():
+    stream = [({}, {"a": 1.0, "b": 1.0, "c": 1.0}), ({}, {"a": 3.0, "b": 3.0, "c": 3.0})]
+    log = fl.evaluate.prequential(
+        stream, MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    df = log.to_frame()
+    assert df[df["step"] == 0]["y_pred"].isna().all()
+    assert (df[df["step"] == 1]["y_pred"] == 1.0).all()
+
+
+def test_log_shape():
+    log = fl.evaluate.prequential(
+        make_stream(10), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    df = log.to_frame()
+    assert len(df) == 30
+    assert list(df.columns) == [
+        "step",
+        "output",
+        "y_true",
+        "y_pred",
+        "utility",
+        "queried",
+        "cost",
+        "cum_cost",
+    ]
+
+
+def test_iter_prequential_reports():
+    reports = list(
+        fl.evaluate.iter_prequential(
+            make_stream(25),
+            MeanModel(),
+            fl.strategy.QueryAll(),
+            fl.budget.Unlimited(),
+            COSTS,
+            step=10,
+        )
+    )
+    assert [r["Step"] for r in reports] == [10, 20, 25]
+    assert reports[-1]["Queries"] == 75
+    assert reports[-1]["Cost"] == 25 * 8.0
+
+
+# Metrics
+
+
+def test_per_output_matches_manual_computation():
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    df = log.to_frame().dropna(subset=["y_pred"])
+    result = fl.metrics.per_output(log, AbsError())
+    for o in COSTS:
+        rows = df[df["output"] == o]
+        assert result[o].get() == pytest.approx((rows["y_true"] - rows["y_pred"]).abs().mean())
+
+
+def test_curve_last_value_matches_per_output():
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    curve = fl.metrics.curve(log, AbsError(), every=5)
+    assert sorted(curve["step"].unique()) == [4, 9, 14, 19, 24, 29]
+    final = curve[curve["step"] == 29].set_index("output")["value"]
+    expected = fl.metrics.per_output(log, AbsError())
+    for o in COSTS:
+        assert final[o] == pytest.approx(expected[o].get())
