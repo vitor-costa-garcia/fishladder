@@ -514,14 +514,30 @@ stream = [
     ({"x": rng.random()}, {"a": rng.random(), "b": rng.random(), "c": rng.random()})
     for _ in range(300)
 ]
-log = fl.evaluate.prequential(
-    stream,
-    MultiMean(),
-    fl.strategy.QueryByCommittee(Mean(), seed=0),
-    fl.budget.VariableThreshold(fl.budget.PerOutput(fl.budget.RateBudget(1.0))),
-    {"a": 1.0, "b": 1.0, "c": 1.0},
-)
-print([row["utility"] for row in log])
+
+
+class Proportional(fl.strategy.Randomized):
+    def probability_one(self, output, utility, recent):
+        return utility / statistics.mean(recent)
+
+
+def budget():
+    return fl.budget.PerOutput(fl.budget.RateBudget(1.0))
+
+
+def committee():
+    return fl.strategy.QueryByCommittee(Mean(), seed=0)
+
+
+setups = [
+    (committee(), fl.budget.VariableThreshold(budget())),
+    (committee(), fl.budget.VariableThreshold(budget(), randomize=1.0, seed=0)),
+    (fl.strategy.Split(committee(), p=0.2, seed=0), fl.budget.VariableThreshold(budget())),
+    (Proportional(committee(), rate=0.3, p_min=0.05, seed=0), budget()),
+]
+for strategy, budget in setups:
+    log = fl.evaluate.prequential(stream, MultiMean(), strategy, budget, {"a": 1.0, "b": 1.0, "c": 1.0})
+    print([(row["utility"], row["probability"], row["queried"]) for row in log])
 """
 
 
@@ -990,11 +1006,32 @@ def test_randomized_rate_rescales_probabilities():
 def test_randomized_p_min_and_clipping():
     class Wild(fl.strategy.Randomized):
         def probability_one(self, output, utility, recent):
-            return utility
+            return utility - 2
 
-    s = Wild(Utilities([1.0, -3.0, 5.0, 0.0]), p_min=0.1, seed=0)
+    s = Wild(Utilities([1.0, 1.0, 5.0, 2.5]), p_min=0.1, seed=0)
     probabilities = [s.sample_one({}, {}, {"a": 1.0})[1]["a"] for _ in range(4)]
-    assert probabilities == [1.0, 0.1, 1.0, 0.1]
+    assert probabilities == [1.0, 0.1, 1.0, 0.5]
+
+
+@pytest.mark.parametrize("p_min", [0.0, 0.05, 0.1])
+def test_randomized_p_min_does_not_change_the_rate(p_min):
+    rng = random.Random(0)
+    utilities = [rng.expovariate(1.0) for _ in range(5000)]
+    s = Proportional(Utilities(utilities), rate=0.2, p_min=p_min, seed=0)
+    probabilities = [s.sample_one({}, {}, {"a": 1.0})[1]["a"] for _ in utilities]
+    assert statistics.mean(probabilities) == pytest.approx(0.2, abs=0.02)
+    assert min(probabilities) >= p_min
+
+
+def test_randomized_rejects_invalid_probabilities():
+    class Broken(fl.strategy.Randomized):
+        def probability_one(self, output, utility, recent):
+            return math.nan
+
+    s = Broken(Utilities([1.0, 1.0]), p_min=0.1)
+    s.sample_one({}, {}, {"a": 1.0})  # nothing to compare to, so not asked
+    with pytest.raises(ValueError, match="finite"):
+        s.sample_one({}, {}, {"a": 1.0})
 
 
 def test_randomized_infinite_utilities_are_always_sampled_and_not_kept():
@@ -1013,11 +1050,39 @@ def test_randomized_window_is_bounded():
     assert list(s._utilities["a"]) == [1.0, 1.0, 1.0]
 
 
-def test_randomized_sampled_outputs_stay_queryable():
-    s = Half(Utilities([0.0] * 100), seed=0)
-    utilities = [s.sample_one({}, {}, {"a": 1.0})[0]["a"] for _ in range(100)]
-    assert all(u == 0.0 or u > 0 for u in utilities)
-    assert any(u > 0 for u in utilities)
+@pytest.mark.parametrize("utility", [0.0, -1.0, math.nan])
+def test_randomized_never_samples_what_its_strategy_vetoes(utility):
+    s = Half(Utilities([1.0] + [utility] * 100), p_min=0.2, seed=0)
+    s.sample_one({}, {}, {"a": 1.0})
+    for _ in range(100):
+        assert s.sample_one({}, {}, {"a": 1.0}) == ({"a": 0.0}, {"a": 0.0})
+    # Vetoed utilities are not kept either
+    assert list(s._utilities["a"]) == [1.0]
+
+
+def test_randomized_keeps_the_utilities_and_probabilities_of_its_strategy():
+    s = Half(fl.strategy.RandomPerOutput(p=0.2, seed=0), seed=0)
+    results = [s.sample_one({}, {}, {"a": 1.0}) for _ in range(20_000)]
+    # Utilities of random querying are 1, and the first sampled one has nothing to compare to
+    assert {u["a"] for u, _ in results} == {0.0, 1.0}
+    assert {round(p["a"], 9) for _, p in results[100:]} == {0.0, 0.1}
+    assert statistics.mean(u["a"] > 0 for u, _ in results) == pytest.approx(0.1, abs=0.01)
+
+
+class Partial(fl.base.QueryStrategy):
+    """Only score output a, as a strategy that knows nothing about the other outputs might."""
+
+    def utilities_one(self, x, y_pred, costs):
+        return {"a": 1.0}
+
+
+def test_randomized_and_split_do_not_query_outputs_left_out():
+    s = Half(Partial(), seed=0)
+    for _ in range(50):
+        assert s.sample_one({}, {}, {"a": 1.0, "b": 1.0})[0]["b"] == 0.0
+    s = fl.strategy.Split(Partial(), p=0.5, seed=0)
+    utilities = [s.utilities_one({}, {}, {"a": 1.0, "b": 1.0})["b"] for _ in range(50)]
+    assert set(utilities) == {0.0, math.inf}  # only explored
 
 
 def test_randomized_outputs_are_independent_of_order():
@@ -1036,7 +1101,15 @@ def test_randomized_passes_labels_to_its_strategy():
 
 
 @pytest.mark.parametrize(
-    "kwargs", [{"window": 0}, {"rate": 0.0}, {"rate": 1.5}, {"p_min": -0.1}, {"p_min": 2}]
+    "kwargs",
+    [
+        {"window": 0},
+        {"rate": 0.0},
+        {"rate": 1.5},
+        {"p_min": -0.1},
+        {"p_min": 2},
+        {"rate": 0.1, "p_min": 0.1},
+    ],
 )
 def test_randomized_validation(kwargs):
     with pytest.raises(ValueError):

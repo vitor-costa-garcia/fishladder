@@ -275,13 +275,14 @@ class Randomized(QueryStrategy):
     subclasses only define `probability_one`, which turns a utility into a probability given the
     recent utilities of the same output.
 
-    For each output, the class keeps the finite utilities given by `strategy` for the last
-    `window` instances, whether they were queried or not. Infinite utilities, such as those of an
-    output whose committee is not trained yet, and outputs with no recent utilities get a
-    probability of 1. Each output is then sampled independently. A sampled output gets the
-    utility given by `strategy`, floored at a tiny positive value, so that a budget shared by
-    several outputs still picks the most useful of them. Other outputs get a utility of 0, and
-    are not queried.
+    For each output, the class keeps the utilities given by `strategy` for the last `window`
+    instances, whether they were queried or not. Infinite utilities, such as those of an output
+    whose committee is not trained yet, and outputs with no recent utilities get a probability of
+    1. Outputs to which `strategy` gives a utility of 0 or less get a probability of 0, since it
+    means that they should not be queried, and are not kept. Each output is then sampled
+    independently. A sampled output keeps the utility given by `strategy`, so that a budget
+    shared by several outputs still picks the most useful of them. Other outputs get a utility of
+    0, and are not queried.
 
     Sampling already decides which instances are queried, so this works best with budgets that
     query whatever they can afford, such as `budget.RateBudget` or `budget.PerOutput`, rather than
@@ -292,6 +293,10 @@ class Randomized(QueryStrategy):
     budget affords. For instance, `PerOutput(RateBudget(1.5))` with three outputs costing 1 each
     affords a rate of 0.5.
 
+    The probabilities are logged, in the `probability` column of `Log`. If `strategy` is itself
+    randomized, they are multiplied by its own, so that they are exact for the outputs it gave a
+    positive utility to, which are the only ones that can be queried.
+
     Parameters
     ----------
     strategy
@@ -300,11 +305,16 @@ class Randomized(QueryStrategy):
     window
         The number of recent utilities kept for each output.
     rate
-        If given, probabilities are multiplied by `rate` divided by the average probability over
-        the window, including the current instance, so that `probability_one` only needs to give
-        relative probabilities. Probabilities are capped at 1, so the average rate can be lower.
+        If given, probabilities are rescaled by their average over the window, including the
+        current instance, so that each output is sampled `rate` times per instance on average,
+        `p_min` included. `probability_one` then only needs to give relative probabilities.
+        Probabilities are capped at 1, so the average rate is lower when a few instances would
+        get most of it.
     p_min
-        The lowest probability of sampling an output, so that every instance can be queried.
+        The lowest probability of sampling an output that `strategy` gave a positive utility to,
+        so that every such instance can be queried. With `rate`, it must be lower than `rate`,
+        and probabilities are mixed with it, as `p_min + (1 - p_min) * p`, so that it does not
+        raise the average rate.
     seed
         Random number generator seed for reproducibility.
 
@@ -343,8 +353,6 @@ class Randomized(QueryStrategy):
 
     """
 
-    _floor = 1e-12
-
     def __init__(
         self,
         strategy: QueryStrategy,
@@ -359,6 +367,8 @@ class Randomized(QueryStrategy):
             raise ValueError(f"rate must be between 0 and 1, got {rate}")
         if not 0 <= p_min <= 1:
             raise ValueError(f"p_min must be between 0 and 1, got {p_min}")
+        if rate is not None and p_min >= rate:
+            raise ValueError(f"p_min must be lower than rate, got {p_min} and {rate}")
         self.strategy = strategy
         self.window = window
         self.rate = rate
@@ -378,39 +388,50 @@ class Randomized(QueryStrategy):
             The name of the output.
         utility
             The utility of the output for the current instance, as given by `strategy`. It is
-            always finite.
+            always positive and finite.
         recent
-            The finite utilities of the output for the previous instances, oldest first, without
-            the current one. It is never empty.
+            The positive and finite utilities of the output for the previous instances, oldest
+            first, without the current one. It is never empty.
 
         Returns
         -------
-        The probability of sampling the output, or, with `rate`, a relative probability. Values
-        are clipped to between `p_min` and 1.
+        The probability of sampling the output, or, with `rate`, a relative probability. It must
+        be finite, and is clipped to between 0 and 1 before `p_min` is applied.
 
         """
 
     def _probability(self, o: Output, u: float) -> float:
-        utilities = self._utilities[o]
+        # Also catches NaN, which budgets never query either
+        if not u > 0:
+            return 0.0
         if math.isinf(u):
             return 1.0
+        utilities = self._utilities[o]
         if not utilities:
             utilities.append(u)
             return 1.0
-        p = max(self.probability_one(o, u, utilities), 0.0)
+        p = self.probability_one(o, u, utilities)
+        if not math.isfinite(p):
+            raise ValueError(
+                f"probability_one must return a finite number, got {p!r} for output {o!r}"
+            )
+        p = max(p, 0.0)
         utilities.append(u)
-        if self.rate is not None:
-            probabilities = self._probabilities[o]
-            probabilities.append(p)
-            mean = statistics.fmean(probabilities)
-            # When every recent probability is 0, there is nothing to tell instances apart
-            p = p * self.rate / mean if mean > 0 else self.rate
-        return min(max(p, self.p_min), 1.0)
+        if self.rate is None:
+            return min(max(p, self.p_min), 1.0)
+        probabilities = self._probabilities[o]
+        probabilities.append(p)
+        mean = statistics.fmean(probabilities)
+        # Rescale to what is left of the rate once p_min is mixed in. When every recent
+        # probability is 0, there is nothing to tell instances apart.
+        target = (self.rate - self.p_min) / (1 - self.p_min)
+        p = min(p * target / mean, 1.0) if mean > 0 else target
+        return self.p_min + (1 - self.p_min) * p
 
     def sample_one(
         self, x: dict, y_pred: dict, costs: Mapping[Output, float]
     ) -> tuple[dict[Output, float], dict[Output, float]]:
-        base = self.strategy.utilities_one(x, y_pred, costs)
+        base, base_probabilities = self.strategy.sample_one(x, y_pred, costs)
         utilities = {}
         probabilities = {}
         for o in costs:
@@ -418,10 +439,12 @@ class Randomized(QueryStrategy):
                 self._rngs[o] = _output_rng(self.seed, o)
                 self._utilities[o] = collections.deque(maxlen=self.window)
                 self._probabilities[o] = collections.deque(maxlen=self.window)
-            p = self._probability(o, base[o])
-            probabilities[o] = p
+            # Like budgets, treat outputs that the strategy left out as not to be queried
+            u = base.get(o, 0.0)
+            p = self._probability(o, u)
+            probabilities[o] = base_probabilities.get(o, 1.0) * p
             sampled = self._rngs[o].random() < p
-            utilities[o] = max(base[o], self._floor) if sampled else 0.0
+            utilities[o] = u if sampled else 0.0
         return utilities, probabilities
 
     def utilities_one(
@@ -494,7 +517,8 @@ class Split(QueryStrategy):
         for o in costs:
             if o not in self._rngs:
                 self._rngs[o] = _output_rng(self.seed, o)
-            utilities[o] = math.inf if self._rngs[o].random() < self.p else base[o]
+            explored = self._rngs[o].random() < self.p
+            utilities[o] = math.inf if explored else base.get(o, 0.0)
         probabilities = {o: self.p + (1 - self.p) * q for o, q in base_probabilities.items()}
         return utilities, probabilities
 
