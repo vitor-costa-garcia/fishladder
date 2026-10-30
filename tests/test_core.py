@@ -354,7 +354,10 @@ class Constant:
 
 @pytest.mark.parametrize(
     "strategy",
-    [fl.strategy.QueryByCommittee(Constant(), seed=0), fl.strategy.ExpectedError(Constant())],
+    [
+        fl.strategy.QueryByCommittee(Constant(), min_labels=1, seed=0),
+        fl.strategy.ExpectedError(Constant()),
+    ],
 )
 def test_unseen_outputs_get_infinite_utility(strategy):
     strategy.learn_one({}, {"a": 1.0}, {"a": 0.0})
@@ -364,7 +367,7 @@ def test_unseen_outputs_get_infinite_utility(strategy):
 
 
 def test_qbc_utility_is_committee_spread():
-    s = fl.strategy.QueryByCommittee(Constant(), n_members=4, seed=0)
+    s = fl.strategy.QueryByCommittee(Constant(), n_members=4, min_labels=1, seed=0)
     s.learn_one({}, {"a": 1.0}, {})
     for i, member in enumerate(s._committees["a"]):
         member.value = float(i)
@@ -392,9 +395,17 @@ def test_qbc_is_reproducible():
     assert run() == run()
 
 
-def test_qbc_rejects_small_committee():
+def test_qbc_needs_min_labels_before_trusting_committee():
+    s = fl.strategy.QueryByCommittee(Constant(), min_labels=3, seed=0)
+    for expected in (math.inf, math.inf, math.inf, 0.0):
+        assert s.utilities_one({}, {}, {"a": 1.0})["a"] == expected
+        s.learn_one({}, {"a": 1.0}, {})
+
+
+@pytest.mark.parametrize("kwargs", [{"n_members": 1}, {"min_labels": 0}])
+def test_qbc_rejects_invalid_parameters(kwargs):
     with pytest.raises(ValueError):
-        fl.strategy.QueryByCommittee(Constant(), n_members=1)
+        fl.strategy.QueryByCommittee(Constant(), **kwargs)
 
 
 class Recorder(Constant):

@@ -88,7 +88,10 @@ class QueryByCommittee(QueryStrategy):
     output.
 
     The committee is separate from the model being evaluated, and only sees revealed labels.
-    Outputs that have never been revealed get an infinite utility, so that they are queried first.
+    Outputs with fewer than `min_labels` revealed labels get an infinite utility, so that they
+    are queried first. A committee trained on a handful of labels can agree while being wrong,
+    for instance when all its members learned from the same single label, and that output would
+    then rarely be queried again.
 
     Utilities of different outputs are in different units. When outputs share a budget, they are
     compared directly, so per-output budgets (`budget.PerOutput`) are usually a better fit.
@@ -100,6 +103,8 @@ class QueryByCommittee(QueryStrategy):
         member and each output, and is not modified.
     n_members
         The number of members in each committee.
+    min_labels
+        The number of labels an output needs before its committee is trusted.
     seed
         Random number generator seed for reproducibility.
 
@@ -121,13 +126,23 @@ class QueryByCommittee(QueryStrategy):
 
     """
 
-    def __init__(self, regressor: typing.Any, n_members: int = 5, seed: int | None = None):
+    def __init__(
+        self,
+        regressor: typing.Any,
+        n_members: int = 5,
+        min_labels: int = 10,
+        seed: int | None = None,
+    ):
         if n_members < 2:
             raise ValueError(f"n_members must be at least 2, got {n_members}")
+        if min_labels < 1:
+            raise ValueError(f"min_labels must be at least 1, got {min_labels}")
         self.regressor = regressor
         self.n_members = n_members
+        self.min_labels = min_labels
         self.seed = seed
         self._committees: dict[Output, list[typing.Any]] = {}
+        self._n_labels: dict[Output, int] = {}
         self._rngs: dict[Output, random.Random] = {}
 
     def utilities_one(
@@ -135,10 +150,10 @@ class QueryByCommittee(QueryStrategy):
     ) -> dict[Output, float]:
         utilities = {}
         for o in costs:
-            committee = self._committees.get(o)
-            if committee is None:
+            if self._n_labels.get(o, 0) < self.min_labels:
                 utilities[o] = math.inf
             else:
+                committee = self._committees[o]
                 utilities[o] = statistics.pstdev(m.predict_one(x) for m in committee)
         return utilities
 
@@ -150,6 +165,8 @@ class QueryByCommittee(QueryStrategy):
                 # on the order in which outputs are revealed
                 seed = None if self.seed is None else f"{self.seed}:{o!r}"
                 self._rngs[o] = random.Random(seed)
+                self._n_labels[o] = 0
+            self._n_labels[o] += 1
             for member in self._committees[o]:
                 for _ in range(_poisson(1.0, self._rngs[o])):
                     member.learn_one(x, y_o)
