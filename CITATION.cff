@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use fishladder in your research, please cite it as below."
+type: software
+title: "fishladder: an evaluation framework for online multi-output active learning on data streams"
+abstract: >-
+  fishladder is a Python library to evaluate active learning methods on
+  multi-output data streams, where each output has its own labelling cost and
+  delay. It provides query strategies, budgets, prequential evaluation with
+  delayed labels, randomized querying and a synthetic multi-target stream
+  generator, and follows the conventions of River.
+authors:
+  - family-names: "da Costa Garcia"
+    given-names: "Vitor"
+    email: vitorcostagarcia2006@gmail.com
+    orcid: "https://orcid.org/0009-0009-0772-8356"
+version: 0.1.0
+date-released: "2026-10-30"
+license: BSD-3-Clause
+repository-code: "https://github.com/vitor-costa-garcia/fishladder"
+url: "https://pypi.org/project/fishladder/"
+keywords:
+  - active learning
+  - data streams
+  - online learning
+  - multi-output
+  - multi-target regression
+  - river
