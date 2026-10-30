@@ -1,6 +1,6 @@
 """fishladder: evaluation of online multi-output active learning on data streams."""
 
-from fishladder import active, base, budget, evaluate, metrics, strategy
+from fishladder import active, base, budget, evaluate, metrics, strategy, synth
 from fishladder.log import Log
 from fishladder.oracle import Oracle
 
@@ -15,4 +15,5 @@ __all__ = [
     "evaluate",
     "metrics",
     "strategy",
+    "synth",
 ]

@@ -1,6 +1,8 @@
+import itertools
 import math
 import os
 import random
+import statistics
 import subprocess
 import sys
 
@@ -464,6 +466,7 @@ def test_variable_threshold_rejects_bad_step(step):
 
 REPRO_SCRIPT = """
 import random
+import statistics
 
 import fishladder as fl
 
@@ -520,3 +523,82 @@ def test_seeded_runs_do_not_depend_on_hash_seed():
         )
         outputs.add(result.stdout)
     assert len(outputs) == 1
+
+
+# synth
+
+
+def outputs_of(dataset, n):
+    data = list(dataset.take(n))
+    return {o: [y[o] for _, y in data] for o in dataset.outputs}
+
+
+@pytest.mark.parametrize("correlation", [0.0, 0.5, 0.9])
+def test_multitarget_correlation_and_variance(correlation):
+    ys = outputs_of(fl.synth.MultiTarget(correlation=correlation, noise=0.0, seed=1), 5000)
+    for v in ys.values():
+        assert statistics.pstdev(v) == pytest.approx(1.0, abs=0.05)
+    for a, b in itertools.combinations(ys, 2):
+        assert statistics.correlation(ys[a], ys[b]) == pytest.approx(correlation, abs=0.05)
+
+
+def test_multitarget_noise_lowers_correlation():
+    ys = outputs_of(fl.synth.MultiTarget(correlation=0.8, noise=1.0, seed=1), 5000)
+    assert statistics.correlation(ys["y0"], ys["y1"]) == pytest.approx(0.4, abs=0.05)
+
+
+def test_multitarget_drift_only_changes_listed_output_after_position():
+    dataset = fl.synth.MultiTarget(n_features=2, noise=0.0, drift={"y1": 1000}, seed=0)
+    data = list(dataset.take(1500))
+    past, future = data[:1000], data[1000:]
+
+    def nearest_error(o, instances):
+        errors = []
+        for x, y in instances:
+            _, y_past = min(past, key=lambda p: (p[0][0] - x[0]) ** 2 + (p[0][1] - x[1]) ** 2)
+            errors.append(abs(y_past[o] - y[o]))
+        return statistics.mean(errors)
+
+    assert nearest_error("y0", future) < 0.1
+    assert nearest_error("y2", future) < 0.1
+    assert nearest_error("y1", future) > 0.5
+
+
+def test_multitarget_is_reproducible():
+    assert list(fl.synth.MultiTarget(seed=3).take(50)) == list(
+        fl.synth.MultiTarget(seed=3).take(50)
+    )
+    dataset = fl.synth.MultiTarget(seed=3)
+    assert list(dataset.take(50)) == list(dataset.take(50))
+    assert list(fl.synth.MultiTarget(seed=3).take(5)) != list(fl.synth.MultiTarget(seed=4).take(5))
+
+
+def test_multitarget_works_with_prequential():
+    log = fl.evaluate.prequential(
+        fl.synth.MultiTarget(seed=0).take(100),
+        MeanModel(),
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        {"y0": 1.0, "y1": 1.0, "y2": 1.0},
+    )
+    assert len(log) == 300
+
+
+@pytest.mark.parametrize(
+    "kwargs, error",
+    [
+        ({"n_features": 0}, ValueError),
+        ({"n_outputs": 0}, ValueError),
+        ({"correlation": 1.5}, ValueError),
+        ({"noise": -1.0}, ValueError),
+        ({"lengthscale": 0.0}, ValueError),
+        ({"noise": {"y0": 0.1}}, KeyError),
+        ({"noise": {"y0": 0.1, "y1": 0.1, "y2": 0.1, "y9": 0.1}}, KeyError),
+        ({"drift": {"y9": 10}}, KeyError),
+        ({"drift": {"y0": -1}}, ValueError),
+        ({"n_features": 1, "n_outputs": 150}, ValueError),
+    ],
+)
+def test_multitarget_validation(kwargs, error):
+    with pytest.raises(error):
+        fl.synth.MultiTarget(**kwargs)
