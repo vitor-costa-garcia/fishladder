@@ -56,5 +56,7 @@ class Oracle:
         The revealed outputs, and the cost of revealing them.
 
         """
-        outputs = list(outputs)
-        return {o: y[o] for o in outputs if o in y}, self.cost(outputs)
+        outputs = set(outputs)
+        # Follow the order of the costs, so that results do not depend on set ordering
+        revealed = {o: y[o] for o in self.costs if o in outputs and o in y}
+        return revealed, self.cost(outputs)

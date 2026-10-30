@@ -1,5 +1,8 @@
 import math
+import os
 import random
+import subprocess
+import sys
 
 import pytest
 
@@ -457,3 +460,63 @@ def test_variable_threshold_never_overspends():
 def test_variable_threshold_rejects_bad_step(step):
     with pytest.raises(ValueError):
         fl.budget.VariableThreshold(fl.budget.Unlimited(), step=step)
+
+
+REPRO_SCRIPT = """
+import random
+
+import fishladder as fl
+
+
+class Mean:
+    def __init__(self):
+        self.total, self.n = 0.0, 0
+
+    def predict_one(self, x):
+        return self.total / self.n if self.n else 0.0
+
+    def learn_one(self, x, y):
+        self.total += y * x["x"]
+        self.n += 1
+
+
+class MultiMean:
+    def __init__(self):
+        self.models = {}
+
+    def predict_one(self, x):
+        return {o: m.predict_one(x) for o, m in self.models.items()}
+
+    def learn_one(self, x, y):
+        for o, y_o in y.items():
+            self.models.setdefault(o, Mean()).learn_one(x, y_o)
+
+
+rng = random.Random(0)
+stream = [
+    ({"x": rng.random()}, {"a": rng.random(), "b": rng.random(), "c": rng.random()})
+    for _ in range(300)
+]
+log = fl.evaluate.prequential(
+    stream,
+    MultiMean(),
+    fl.strategy.QueryByCommittee(Mean(), seed=0),
+    fl.budget.VariableThreshold(fl.budget.PerOutput(fl.budget.RateBudget(1.0))),
+    {"a": 1.0, "b": 1.0, "c": 1.0},
+)
+print([row["utility"] for row in log])
+"""
+
+
+def test_seeded_runs_do_not_depend_on_hash_seed():
+    outputs = set()
+    for hash_seed in ("1", "2", "3"):
+        result = subprocess.run(
+            [sys.executable, "-c", REPRO_SCRIPT],
+            env={**os.environ, "PYTHONHASHSEED": hash_seed},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        outputs.add(result.stdout)
+    assert len(outputs) == 1

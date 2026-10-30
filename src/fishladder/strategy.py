@@ -127,8 +127,8 @@ class QueryByCommittee(QueryStrategy):
         self.regressor = regressor
         self.n_members = n_members
         self.seed = seed
-        self._rng = random.Random(seed)
         self._committees: dict[Output, list[typing.Any]] = {}
+        self._rngs: dict[Output, random.Random] = {}
 
     def utilities_one(
         self, x: dict, y_pred: dict, costs: Mapping[Output, float]
@@ -146,8 +146,12 @@ class QueryByCommittee(QueryStrategy):
         for o, y_o in y.items():
             if o not in self._committees:
                 self._committees[o] = [copy.deepcopy(self.regressor) for _ in range(self.n_members)]
+                # One generator per output, seeded from its name, so that results do not depend
+                # on the order in which outputs are revealed
+                seed = None if self.seed is None else f"{self.seed}:{o!r}"
+                self._rngs[o] = random.Random(seed)
             for member in self._committees[o]:
-                for _ in range(_poisson(1.0, self._rng)):
+                for _ in range(_poisson(1.0, self._rngs[o])):
                     member.learn_one(x, y_o)
 
 
