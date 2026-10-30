@@ -118,8 +118,8 @@ for x, y in dataset:
 ## Notebooks
 
 The [notebooks](https://github.com/vitor-costa-garcia/fishladder/tree/main/notebooks) show fishladder in use with River: a quickstart,
-the River wrapper, the query strategies, synthetic streams with drift, and
-delayed labels.
+the River wrapper, the query strategies, synthetic streams with drift,
+delayed labels, and randomized querying.
 
 ## Contributing and feedback
 
