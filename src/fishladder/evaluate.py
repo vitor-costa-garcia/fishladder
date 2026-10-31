@@ -102,7 +102,7 @@ def iter_prequential(
     learn_unsupervised
         Whether to learn from the features of every instance, queried or not, such as with the
         scaler of a River pipeline. See `active.Wrapper`. The model is set back as it was when
-        the evaluation ends.
+        the evaluation ends, so a generator that is not used to the end should be closed.
 
     Yields
     ------

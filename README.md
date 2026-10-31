@@ -59,8 +59,9 @@ complements River rather than replacing it.
   from every instance, queried or not, as with River's `learn_during_predict`
   but for this model only. Models and strategies can define a
   `learn_unsupervised(x)` method to do the same. The River models inside
-  strategies, as in `QueryByCommittee`, are not updated, and models that do not
-  predict each instance once, such as River chains, raise a warning.
+  strategies, as in `QueryByCommittee`, are not updated. Models that do not
+  predict each instance once, such as River chains, learn from some instances
+  more than once, and River chains and model selectors raise a warning.
 - **A tidy experiment log** (`fl.Log`), with one row per instance and output,
   from which per-output and averaged metrics, learning curves indexed by cost,
   and areas under them are computed (`fl.metrics`), including the relative

@@ -478,3 +478,41 @@ def test_evaluation_that_fails_to_start_leaves_the_model_unchanged(costs, delay)
             )
         )
     assert not any(FLAG in vars(p) for p in model.models.values())
+
+
+@needs_per_output
+def test_turning_off_keeps_the_setting_of_the_user_in_the_strategy():
+    regressor = SpyScaler() | linear_model.LinearRegression()
+    regressor._LEARN_UNSUPERVISED_DURING_PREDICT = True  # set by the user
+    wrapper = fl.active.Wrapper(
+        multioutput.PerOutputRegressor(SpyScaler() | linear_model.LinearRegression()),
+        fl.strategy.QueryByCommittee(regressor),
+        fl.budget.Unlimited(),
+        COSTS,
+        learn_unsupervised=True,
+    )
+    wrapper.learn_unsupervised = False
+    assert vars(regressor)[FLAG] is True
+
+
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: (
+            preprocessing.StandardScaler()
+            | multioutput.RegressorChain(linear_model.LinearRegression(), order=list(COSTS))
+        ),
+        lambda: multioutput.RegressorChain(
+            model_selection.GreedyRegressor([linear_model.LinearRegression() for _ in range(2)]),
+            order=list(COSTS),
+        ),
+    ],
+    ids=["chain", "selector"],
+)
+def test_does_not_warn_about_models_without_pipelines_inside(make, recwarn):
+    model = make()
+    wrapper = make_wrapper(model)
+    assert not recwarn.list
+    for x, y in friedman_stream(10):
+        wrapper.predict_one(x)
+        wrapper.learn_one(x, y)

@@ -73,7 +73,16 @@ def _find(obj: typing.Any, classes: tuple[type, ...]) -> dict[type, list[typing.
     return found
 
 
-def _river_classes() -> tuple[type, ...] | None:
+class _RiverClasses(typing.NamedTuple):
+    """The River classes that are looked for in models."""
+
+    pipeline: type
+    selector: type
+    chain: type
+    probabilistic_chain: type
+
+
+def _river_classes() -> _RiverClasses | None:
     """The River classes that are looked for in models, or `None` if River is not installed."""
     try:
         from river.compose import Pipeline
@@ -81,32 +90,36 @@ def _river_classes() -> tuple[type, ...] | None:
         from river.multioutput.chain import BaseChain, ProbabilisticClassifierChain
     except ImportError:
         return None
-    return Pipeline, ModelSelector, BaseChain, ProbabilisticClassifierChain
+    return _RiverClasses(Pipeline, ModelSelector, BaseChain, ProbabilisticClassifierChain)
 
 
 def _warn_unsupported(
-    found: dict[type, list[typing.Any]], classes: tuple[type, ...], shared: bool
+    found: dict[type, list[typing.Any]], classes: _RiverClasses, shared: bool
 ) -> None:
-    """Warn about the River models found that predict an instance other than once, and about
-    pipelines `shared` with the strategy."""
-    _, ModelSelector, BaseChain, ProbabilisticClassifierChain = classes
+    """Warn about the River models found that predict an instance other than once, if they hold
+    pipelines, and about pipelines `shared` with the strategy."""
+
+    def with_pipelines(cls: type) -> list[typing.Any]:
+        return [obj for obj in found[cls] if _find(obj, (classes.pipeline,))[classes.pipeline]]
+
+    chains = with_pipelines(classes.chain)
     reasons = []
     if shared:
         reasons.append(
             "the strategy holds pipelines of the model, so its copies of them also learn their "
             "unsupervised steps when predicting. Give the strategy pipelines of its own"
         )
-    if found[ProbabilisticClassifierChain]:
+    if any(isinstance(obj, classes.probabilistic_chain) for obj in chains):
         reasons.append(
             "a River probabilistic classifier chain predicts each instance many times, also when "
             "it learns, so its unsupervised steps learn from it many times"
         )
-    if any(not isinstance(obj, ProbabilisticClassifierChain) for obj in found[BaseChain]):
+    if any(not isinstance(obj, classes.probabilistic_chain) for obj in chains):
         reasons.append(
             "a River chain also predicts when it learns, so its unsupervised steps learn twice "
             "from the instances it learns from"
         )
-    if found[ModelSelector]:
+    if with_pipelines(classes.selector):
         reasons.append(
             "a River model selector predicts with its best model only, so the unsupervised steps "
             "of the best model learn twice from the instances the selector learns from, and those "
@@ -156,15 +169,16 @@ class Wrapper:
 
         Unsupervised steps then learn each time their pipeline predicts or transforms an instance.
         So each instance is learned from once if each pipeline predicts it once, as with
-        `river.multioutput.PerOutputRegressor` (River 0.26 or later). Models that also predict when they learn, as
-        River chains, model selectors and many other River ensembles and meta-models do, learn
-        twice from the instances they learn from, and so do pipelines inside a
-        `river.compose.TransformerUnion`. This is as with `river.compose.learn_during_predict`.
-        A warning is raised for River chains and model selectors, but not for all such models.
-        Models that make their pipelines when they first learn, as River multi-output models do,
-        miss the instances predicted before. Models that make new pipelines with `clone` do not
-        keep the setting. Copies of the model, and saved models, made while the setting is on
-        keep it on. Pipelines should not be shared by wrappers that learn from every instance.
+        `river.multioutput.PerOutputRegressor` (River 0.26 or later). Models that also predict
+        when they learn, as River chains, model selectors and many other River ensembles and
+        meta-models do, learn twice from the instances they learn from, and so do pipelines inside
+        a `river.compose.TransformerUnion`. This is as with `river.compose.learn_during_predict`.
+        A warning is raised for River chains and model selectors that hold pipelines, but not for
+        all such models. Models that make their pipelines when they first learn, as River
+        multi-output models do, miss the instances predicted before. Models that make new
+        pipelines with `clone` do not keep the setting, and pipelines held by objects that cannot
+        be read may be missed. Copies of the model, and saved models, made while the setting is
+        on keep it on. Pipelines should not be shared by wrappers that learn from every instance.
 
     Examples
     --------
@@ -206,6 +220,8 @@ class Wrapper:
         self._learn_unsupervised = False
         # The pipelines given the setting, with whether they had one of their own and its value
         self._flagged: list[tuple[typing.Any, bool, typing.Any]] = []
+        # The pipelines of the model and the strategy that already had the setting, by id
+        self._kept: set[int] = set()
         self.learn_unsupervised = learn_unsupervised
 
     @property
@@ -220,21 +236,23 @@ class Wrapper:
         classes = _river_classes()
         if classes is not None and value and not self._learn_unsupervised:
             found = _find(self.model, classes)
-            pipelines = found[classes[0]]
-            in_strategy = {id(p) for p in _find(self.strategy, classes[:1])[classes[0]]}
-            shared = any(id(pipeline) in in_strategy for pipeline in pipelines)
+            pipelines = found[classes.pipeline]
+            in_strategy = _find(self.strategy, (classes.pipeline,))[classes.pipeline]
+            shared = not {id(p) for p in pipelines}.isdisjoint(id(p) for p in in_strategy)
             # Before changing anything, in case warnings are raised as errors
             _warn_unsupported(found, classes, shared)
+            self._kept = {id(p) for p in [*pipelines, *in_strategy] if vars(p).get(_FLAG) is True}
             for pipeline in pipelines:
                 own = vars(pipeline)
                 self._flagged.append((pipeline, _FLAG in own, own.get(_FLAG)))
                 setattr(pipeline, _FLAG, True)
         elif classes is not None and not value and self._learn_unsupervised:
-            self._unflag(classes[0])
+            self._unflag(classes.pipeline)
         self._learn_unsupervised = value
 
     def _unflag(self, Pipeline: type) -> None:
-        flagged = {id(pipeline) for pipeline, _, _ in self._flagged}
+        # Pipelines put back above, or that had the setting before, are left as they are
+        skipped = {id(pipeline) for pipeline, _, _ in self._flagged} | self._kept
         for pipeline, had, previous in self._flagged:
             if had:
                 setattr(pipeline, _FLAG, previous)
@@ -243,9 +261,10 @@ class Wrapper:
         # Copies of the pipelines, such as those a chain or a strategy made since
         for holder in (self.model, self.strategy):
             for pipeline in _find(holder, (Pipeline,))[Pipeline]:
-                if id(pipeline) not in flagged and vars(pipeline).get(_FLAG) is True:
+                if id(pipeline) not in skipped and vars(pipeline).get(_FLAG) is True:
                     del vars(pipeline)[_FLAG]
         self._flagged = []
+        self._kept = set()
 
     def query_one(
         self, x: dict
