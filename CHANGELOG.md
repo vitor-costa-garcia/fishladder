@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+### Feature
+
+* Make `strategy`, `budget` and `costs` optional in `iter_prequential` and `prequential`. By
+  default, every label is learned, with a cost of 1 for each output of the first instance, so a
+  plain prequential evaluation only needs a dataset and a model.
+
 ## v0.2.0 (2026-10-30)
 
 ### Feature
