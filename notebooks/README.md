@@ -12,7 +12,7 @@ Examples of fishladder in use, with [River](https://riverml.xyz) for the data, m
 | [06_randomized_querying.ipynb](06_randomized_querying.ipynb) | Randomizing query strategies with a randomized threshold, `fl.strategy.Split` and `fl.strategy.Randomized`, on a local drift that moves between two points with a low budget, and the query probabilities in the log |
 
 To run them, install fishladder from a clone of this repository with the River and plotting
-extras:
+extras. The notebooks need River 0.26 or later:
 
 ```bash
 pip install -e ".[river,plots]" jupyter

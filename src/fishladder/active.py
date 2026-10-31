@@ -200,13 +200,16 @@ class Wrapper:
         strategies, as in `strategy.QueryByCommittee`, are not changed, unless the strategy holds
         pipelines of the model, and a warning is raised then.
 
-        Each instance is learned from once if each pipeline predicts it once, as with
-        `river.multioutput.PerOutputRegressor`. River chains also predict when they learn, so
-        their unsupervised steps learn twice from the instances they learn from. River model
-        selectors and probabilistic classifier chains do not predict once either, and a warning is
-        raised for all of these. Models that make their pipelines when they first learn, as River
-        multi-output models do, miss the instances predicted before. Models that make new
-        pipelines with `clone` do not keep the setting.
+        Unsupervised steps then learn each time their pipeline predicts or transforms an instance.
+        So each instance is learned from once if each pipeline predicts it once, as with
+        `river.multioutput.PerOutputRegressor`. Models that also predict when they learn, as
+        River chains, model selectors and many other River ensembles and meta-models do, learn
+        twice from the instances they learn from, and so do pipelines inside a
+        `river.compose.TransformerUnion`. This is as with `river.compose.learn_during_predict`.
+        A warning is raised for River chains and model selectors, but not for all such models.
+        Models that make their pipelines when they first learn, as River multi-output models do,
+        miss the instances predicted before. Models that make new pipelines with `clone` do not
+        keep the setting.
 
     Examples
     --------
