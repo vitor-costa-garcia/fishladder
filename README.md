@@ -54,6 +54,13 @@ complements River rather than replacing it.
 - **Delayed labels.** A delay per output, constant or drawn at random, and
   labels that never arrive. Queries are paid for when they are made, and
   labels are learned when they arrive.
+- **Learning from unlabelled instances.** With `learn_unsupervised=True`, the
+  unsupervised steps of the model's River pipelines, such as a scaler, learn
+  from every instance, queried or not, as with River's `learn_during_predict`
+  but for this model only. Models and strategies can define a
+  `learn_unsupervised(x)` method to do the same. The River models inside
+  strategies, as in `QueryByCommittee`, are not updated, and models that do not
+  predict each instance once, such as River chains, raise a warning.
 - **A tidy experiment log** (`fl.Log`), with one row per instance and output,
   from which per-output and averaged metrics, learning curves indexed by cost,
   and areas under them are computed (`fl.metrics`), including the relative

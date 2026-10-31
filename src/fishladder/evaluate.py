@@ -60,6 +60,7 @@ def iter_prequential(
     step: int = 1,
     log: Log | None = None,
     delay: Delay = None,
+    learn_unsupervised: bool = False,
 ) -> typing.Iterator[dict[str, typing.Any]]:
     """Evaluate an active learning setup on a stream, yielding results as it goes.
 
@@ -98,6 +99,9 @@ def iter_prequential(
         output, or a function of the features, the true outputs and the queried output, called
         once per query, which can draw random delays. A delay of `math.inf` means that the label
         never arrives, as when a query fails. Defaults to no delay.
+    learn_unsupervised
+        Whether to learn from the features of every instance, queried or not, such as with the
+        scaler of a River pipeline. See `active.Wrapper`.
 
     Yields
     ------
@@ -108,7 +112,7 @@ def iter_prequential(
     if step < 1:
         raise ValueError(f"step must be at least 1, got {step}")
 
-    learner = Wrapper(model, strategy, budget, costs)
+    learner = Wrapper(model, strategy, budget, costs, learn_unsupervised=learn_unsupervised)
     oracle = Oracle(costs)
     delay_of = _delay_function(delay, oracle.costs)
     # The labels waiting to be learned, by the step after which they arrive, then by the step of
@@ -161,6 +165,7 @@ def prequential(
     costs: Mapping[Output, float],
     metric: typing.Any = None,
     delay: Delay = None,
+    learn_unsupervised: bool = False,
 ) -> Log:
     """Evaluate an active learning setup on a stream and return the experiment log.
 
@@ -183,6 +188,9 @@ def prequential(
     delay
         The number of instances after which queried labels arrive. Either a single value, one per
         output, or a function of the features, the true outputs and the queried output.
+    learn_unsupervised
+        Whether to learn from the features of every instance, queried or not. See
+        `active.Wrapper`.
 
     Returns
     -------
@@ -247,7 +255,15 @@ def prequential(
     """
     log = Log()
     for _ in iter_prequential(
-        dataset, model, strategy, budget, costs, metric=metric, log=log, delay=delay
+        dataset,
+        model,
+        strategy,
+        budget,
+        costs,
+        metric=metric,
+        log=log,
+        delay=delay,
+        learn_unsupervised=learn_unsupervised,
     ):
         pass
     return log

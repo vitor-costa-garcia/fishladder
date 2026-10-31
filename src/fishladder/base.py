@@ -27,6 +27,13 @@ Dataset = Iterable[tuple[dict[typing.Any, typing.Any], dict[typing.Any, typing.A
 """An iterable of `(x, y)` pairs, where `y` maps each output to its value."""
 
 
+def _learn_unsupervised(obj: typing.Any, x: dict) -> None:
+    """Call the optional `learn_unsupervised(x)` method of `obj`, if it has one."""
+    hook = getattr(obj, "learn_unsupervised", None)
+    if callable(hook):
+        hook(x)
+
+
 @typing.runtime_checkable
 class Model(typing.Protocol):
     """An incremental multi-output model.
@@ -34,6 +41,11 @@ class Model(typing.Protocol):
     Any River multi-output model (for instance `river.multioutput.RegressorChain`) satisfies this
     protocol. `learn_one` must accept a `y` that only contains some of the outputs, which is what
     happens when only a subset of the outputs of an instance is queried.
+
+    A model can also have a `learn_unsupervised(x)` method, to learn from the features of every
+    instance, queried or not. When unsupervised learning is enabled, as with the
+    `learn_unsupervised` parameter of `active.Wrapper`, it is called once per instance, before the
+    instance is predicted.
 
     """
 
@@ -110,6 +122,20 @@ class QueryStrategy(abc.ABC):
             The revealed outputs.
         y_pred
             The model's predictions for `x`, made before it learned from `y`.
+
+        """
+
+    def learn_unsupervised(self, x: dict) -> None:
+        """Update the strategy with the features of an instance, queried or not.
+
+        This is only called when unsupervised learning is enabled, as with the
+        `learn_unsupervised` parameter of `active.Wrapper`, once per instance, before the instance
+        is predicted. By default, it does nothing.
+
+        Parameters
+        ----------
+        x
+            A dictionary of features.
 
         """
 

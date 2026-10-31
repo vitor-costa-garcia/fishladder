@@ -1349,3 +1349,123 @@ def test_variable_threshold_randomize_is_reproducible():
 def test_variable_threshold_randomize_validation():
     with pytest.raises(ValueError):
         fl.budget.VariableThreshold(fl.budget.Unlimited(), randomize=-1)
+
+
+# Unsupervised learning
+
+
+class HookedModel(MeanModel):
+    def __init__(self):
+        super().__init__()
+        self.unsupervised = []
+
+    def learn_unsupervised(self, x):
+        self.unsupervised.append(x)
+
+
+class HookedStrategy(fl.strategy.QueryAll):
+    def __init__(self):
+        self.unsupervised = []
+
+    def learn_unsupervised(self, x):
+        self.unsupervised.append(x)
+
+
+@pytest.mark.parametrize("learn_unsupervised", [False, True])
+def test_learn_unsupervised_hooks(learn_unsupervised):
+    model, strategy = HookedModel(), HookedStrategy()
+    fl.evaluate.prequential(
+        make_stream(30),
+        model,
+        strategy,
+        fl.budget.TotalBudget(10.0),
+        COSTS,
+        learn_unsupervised=learn_unsupervised,
+    )
+    expected = [{"i": i} for i in range(30)] if learn_unsupervised else []
+    assert model.unsupervised == expected
+    assert strategy.unsupervised == expected
+
+
+def test_learn_unsupervised_without_hooks():
+    log = fl.evaluate.prequential(
+        make_stream(10),
+        MeanModel(),
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        COSTS,
+        learn_unsupervised=True,
+    )
+    assert len(log.to_frame()) == 30
+
+
+@pytest.mark.parametrize(
+    "wrap", [lambda s: fl.strategy.Split(s, p=0.5, seed=0), lambda s: Half(s, seed=0)]
+)
+def test_wrapping_strategies_forward_learn_unsupervised(wrap):
+    inner = HookedStrategy()
+    wrap(inner).learn_unsupervised({"i": 0})
+    assert inner.unsupervised == [{"i": 0}]
+
+
+@pytest.mark.parametrize(
+    "wrap", [lambda s: fl.strategy.Split(s, p=0.5, seed=0), lambda s: Half(s, seed=0)]
+)
+def test_wrapping_strategies_accept_strategies_without_learn_unsupervised(wrap):
+    class DuckStrategy:
+        def sample_one(self, x, y_pred, costs):
+            return {o: 1.0 for o in costs}, {}
+
+    wrap(DuckStrategy()).learn_unsupervised({"i": 0})
+
+
+def test_learn_unsupervised_attribute_that_is_not_a_method():
+    model = MeanModel()
+    model.learn_unsupervised = True
+    wrapper = fl.active.Wrapper(
+        model, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, learn_unsupervised=True
+    )
+    x, y = next(make_stream(1))
+    wrapper.predict_one(x)
+    wrapper.learn_one(x, y)
+
+
+def test_learn_unsupervised_hooks_once_when_outputs_arrive_separately():
+    model, strategy = HookedModel(), HookedStrategy()
+    wrapper = fl.active.Wrapper(
+        model, strategy, fl.budget.Unlimited(), COSTS, learn_unsupervised=True
+    )
+    x, y = next(make_stream(1))
+    wrapper.predict_one(x)
+    for o in COSTS:
+        wrapper.learn_one(x, {o: y[o]})
+    assert model.unsupervised == [x]
+    assert strategy.unsupervised == [x]
+
+
+def test_learn_unsupervised_warning_check_handles_deep_models():
+    class Node:
+        def __init__(self, child):
+            self.child = child
+
+    model = MeanModel()
+    model.history = None
+    for _ in range(5000):
+        model.history = Node(model.history)
+    fl.active.Wrapper(
+        model, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, learn_unsupervised=True
+    )
+
+
+def test_learn_unsupervised_skips_objects_it_cannot_read():
+    class Unreadable:
+        __slots__ = ("value",)
+
+        def __getattr__(self, name):
+            raise RuntimeError("cannot be read")
+
+    model = MeanModel()
+    model.unreadable = Unreadable()
+    fl.active.Wrapper(
+        model, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, learn_unsupervised=True
+    )
