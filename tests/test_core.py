@@ -282,6 +282,27 @@ def test_iter_prequential_reports():
     assert reports[-1]["Cost"] == 25 * 8.0
 
 
+def test_prequential_defaults_learn_every_label():
+    model = MeanModel()
+    log = fl.evaluate.prequential(iter(make_stream(20)), model)
+    df = log.to_frame()
+    assert len(df) == 20 * len(COSTS)
+    assert df["queried"].all()
+    assert (df["cost"] == 1.0).all()
+    assert model.learned == [y for _, y in make_stream(20)]
+
+
+def test_prequential_default_costs_with_given_strategy_and_budget():
+    log = fl.evaluate.prequential(
+        make_stream(10), MeanModel(), fl.strategy.QueryAll(), fl.budget.TotalBudget(5.0)
+    )
+    assert log.to_frame()["cost"].sum() == 5.0
+
+
+def test_prequential_defaults_on_empty_stream():
+    assert fl.evaluate.prequential([], MeanModel()).to_frame().empty
+
+
 # Metrics
 
 
