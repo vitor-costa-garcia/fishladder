@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+## v0.2.0 (2026-10-30)
+
 ### Feature
 
 * Add `learn_unsupervised` to `Wrapper`, `iter_prequential` and `prequential`, so that the
