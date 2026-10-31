@@ -21,6 +21,52 @@ _FLAG = "_LEARN_UNSUPERVISED_DURING_PREDICT"
 _PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 
+class _Setting:
+    """The value a wrapper gives to the River setting of its pipelines.
+
+    It is true while the wrapper learns from every instance, which is all that River checks, and
+    false once the wrapper stops. Copies of a pipeline, such as those a chain makes when it first
+    learns, share it, so they all stop with the wrapper, and the wrapper can tell its own setting
+    apart from any other. It also keeps what each pipeline had before, to put it back.
+
+    """
+
+    def __init__(self) -> None:
+        self.on = True
+        # Whether each pipeline had a setting of its own before, by id, and its value
+        self.previous: dict[int, tuple[bool, typing.Any]] = {}
+
+    def __bool__(self) -> bool:
+        return self.on
+
+    def give(self, pipeline: typing.Any) -> None:
+        own = vars(pipeline)
+        self.previous[id(pipeline)] = (_FLAG in own, own.get(_FLAG))
+        setattr(pipeline, _FLAG, self)
+
+    def take_back(self, pipeline: typing.Any) -> None:
+        """Put back what `pipeline` had before, skipping settings of wrappers that stopped."""
+        if vars(pipeline).get(_FLAG) is not self:
+            return
+        value: typing.Any = self
+        while isinstance(value, _Setting) and not value.on:
+            had, value = value.previous.get(id(pipeline), (False, None))
+            if not had:
+                delattr(pipeline, _FLAG)
+                return
+        setattr(pipeline, _FLAG, value)
+
+    def __copy__(self) -> _Setting:
+        return self
+
+    def __deepcopy__(self, memo: dict) -> _Setting:
+        return self
+
+    def __reduce__(self) -> tuple[type, tuple[bool]]:
+        # A saved model keeps the setting as River's own
+        return bool, (self.on,)
+
+
 def _outside_stacklevel() -> int:
     """The `stacklevel` that points `warnings.warn`, called by the caller of this function, at the
     first frame outside fishladder."""
@@ -98,8 +144,8 @@ def _warn_unsupported(
         )
     if found[ProbabilisticClassifierChain]:
         reasons.append(
-            "a River probabilistic classifier chain predicts each instance many times, so its "
-            "unsupervised steps learn from it many times"
+            "a River probabilistic classifier chain predicts each instance many times, also when "
+            "it learns, so its unsupervised steps learn from it many times"
         )
     if any(not isinstance(obj, ProbabilisticClassifierChain) for obj in found[BaseChain]):
         reasons.append(
@@ -200,8 +246,9 @@ class Wrapper:
         self.costs = dict(costs)
         self._last: tuple[dict, dict] | None = None
         self._learn_unsupervised = False
-        # The pipelines given the setting, with what they had before
-        self._flagged: list[tuple[typing.Any, bool, typing.Any]] = []
+        self._setting = _Setting()
+        # The pipelines given the setting
+        self._flagged: list[typing.Any] = []
         self.learn_unsupervised = learn_unsupervised
 
     @property
@@ -216,28 +263,29 @@ class Wrapper:
         classes = _river_classes()
         if classes is not None and value and not self._learn_unsupervised:
             found = _find(self.model, classes)
-            for pipeline in found[classes[0]]:
-                own = vars(pipeline)
-                self._flagged.append((pipeline, _FLAG in own, own.get(_FLAG)))
-                setattr(pipeline, _FLAG, True)
+            pipelines = found[classes[0]]
             in_strategy = {id(p) for p in _find(self.strategy, classes[:1])[classes[0]]}
-            shared = any(id(pipeline) in in_strategy for pipeline, _, _ in self._flagged)
+            shared = any(id(pipeline) in in_strategy for pipeline in pipelines)
+            # Before changing anything, in case warnings are raised as errors
             _warn_unsupported(found, classes, shared)
+            self._setting = _Setting()
+            for pipeline in pipelines:
+                self._setting.give(pipeline)
+            self._flagged = pipelines
         elif classes is not None and not value and self._learn_unsupervised:
             self._unflag(classes[0])
         self._learn_unsupervised = value
 
     def _unflag(self, Pipeline: type) -> None:
-        flagged = {id(pipeline) for pipeline, _, _ in self._flagged}
-        for pipeline, had, previous in self._flagged:
-            if had:
-                setattr(pipeline, _FLAG, previous)
-            else:
-                delattr(pipeline, _FLAG)
-        # Pipelines that the model made since, as copies of flagged ones, have the setting too
-        for pipeline in _find(self.model, (Pipeline,))[Pipeline]:
-            if id(pipeline) not in flagged and _FLAG in vars(pipeline):
-                delattr(pipeline, _FLAG)
+        # This turns the setting off wherever it was copied, so the rest only tidies up
+        self._setting.on = False
+        # With copies of the pipelines, such as those a chain or a strategy made since
+        for pipeline in [
+            *self._flagged,
+            *_find(self.model, (Pipeline,))[Pipeline],
+            *_find(self.strategy, (Pipeline,))[Pipeline],
+        ]:
+            self._setting.take_back(pipeline)
         self._flagged = []
 
     def query_one(

@@ -1,4 +1,5 @@
 import collections
+import warnings
 
 import pytest
 
@@ -360,3 +361,112 @@ def test_warns_about_pipelines_shared_with_the_strategy(recwarn):
     )
     # The warning above was taken by pytest.warns, so separate pipelines raised none
     assert not recwarn.list
+
+
+FLAG = "_LEARN_UNSUPERVISED_DURING_PREDICT"
+
+
+def pipelines_of(model):
+    from river.compose import Pipeline
+
+    return fl.active._find(model, (Pipeline,))[Pipeline]
+
+
+def test_warning_raised_as_error_leaves_the_model_unchanged():
+    model = make_selector()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with pytest.raises(UserWarning):
+            make_wrapper(model, costs={0: 1.0})
+    assert pipelines_of(model) and not any(FLAG in vars(p) for p in pipelines_of(model))
+
+
+@pytest.mark.parametrize("stop_early", [False, True])
+def test_evaluation_leaves_the_model_unchanged(stop_early):
+    model = PerOutputModel(COSTS)
+    run = fl.evaluate.iter_prequential(
+        friedman_stream(20),
+        model,
+        fl.strategy.QueryAll(),
+        fl.budget.Unlimited(),
+        COSTS,
+        learn_unsupervised=True,
+    )
+    if stop_early:
+        next(run)
+        run.close()
+    else:
+        list(run)
+    assert pipelines_of(model) and not any(FLAG in vars(p) for p in pipelines_of(model))
+    # The model learns as usual afterwards
+    spies = list(model.spies.values())
+    before = [spy.n_learned for spy in spies]
+    x, y = next(friedman_stream(1))
+    model.predict_one(x)
+    assert [spy.n_learned for spy in spies] == before
+    model.learn_one(x, y)
+    assert [spy.n_learned for spy in spies] == [n + 1 for n in before]
+
+
+@needs_per_output
+def test_turning_off_reaches_the_copies_of_the_strategy():
+    pipeline = SpyScaler() | linear_model.LinearRegression()
+    strategy = fl.strategy.QueryByCommittee(pipeline, n_members=2, min_labels=1, seed=0)
+    with pytest.warns(UserWarning, match="strategy holds pipelines"):
+        wrapper = fl.active.Wrapper(
+            multioutput.PerOutputRegressor(pipeline),
+            strategy,
+            fl.budget.Unlimited(),
+            COSTS,
+            learn_unsupervised=True,
+        )
+    for x, y in friedman_stream(5):
+        wrapper.predict_one(x)
+        wrapper.learn_one(x, y)
+    members = strategy._committees[0]
+    assert all(FLAG in vars(m) for m in members)
+    wrapper.learn_unsupervised = False
+    assert not any(FLAG in vars(m) for m in members)
+
+
+def test_turning_off_reaches_copies_it_cannot_find():
+    import copy
+
+    model = PerOutputModel([0])
+    wrapper = make_wrapper(model, costs={0: 1.0})
+    outside = copy.deepcopy(model.models[0])
+    assert getattr(outside, FLAG)
+    wrapper.learn_unsupervised = False
+    assert not getattr(outside, FLAG)
+
+
+@pytest.mark.parametrize("first_off", ["first", "second"])
+def test_turning_off_keeps_other_settings(first_off):
+    model = PerOutputModel(COSTS)
+    model.models[0]._LEARN_UNSUPERVISED_DURING_PREDICT = True  # set by the user
+    wrappers = {"first": make_wrapper(model), "second": make_wrapper(model)}
+    wrappers[first_off].learn_unsupervised = False
+    # The other wrapper still learns from every instance
+    assert all(getattr(p, FLAG) for p in model.models.values())
+    wrappers["second" if first_off == "first" else "first"].learn_unsupervised = False
+    assert vars(model.models[0])[FLAG] is True
+    assert not getattr(model.models[1], FLAG)
+
+
+def test_turning_off_after_the_setting_was_removed():
+    model = PerOutputModel([0])
+    wrapper = make_wrapper(model, costs={0: 1.0})
+    del model.models[0]._LEARN_UNSUPERVISED_DURING_PREDICT
+    wrapper.learn_unsupervised = False
+    assert FLAG not in vars(model.models[0])
+
+
+def test_saved_model_keeps_the_setting_as_river_does():
+    import pickle
+
+    model = PerOutputModel([0])
+    wrapper = make_wrapper(model, costs={0: 1.0})
+    saved = pickle.loads(pickle.dumps(model.models[0]))
+    assert vars(saved)[FLAG] is True
+    wrapper.learn_unsupervised = False
+    assert vars(saved)[FLAG] is True
