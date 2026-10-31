@@ -11,7 +11,7 @@ import statistics
 import typing
 from collections.abc import Mapping, Sequence
 
-from fishladder.base import Output, QueryStrategy
+from fishladder.base import Output, QueryStrategy, _learn_unsupervised
 
 __all__ = [
     "ExpectedError",
@@ -455,6 +455,9 @@ class Randomized(QueryStrategy):
     def learn_one(self, x: dict, y: dict, y_pred: dict) -> None:
         self.strategy.learn_one(x, y, y_pred)
 
+    def learn_unsupervised(self, x: dict) -> None:
+        _learn_unsupervised(self.strategy, x)
+
 
 class Split(QueryStrategy):
     """Mix another strategy with random exploration.
@@ -529,3 +532,6 @@ class Split(QueryStrategy):
 
     def learn_one(self, x: dict, y: dict, y_pred: dict) -> None:
         self.strategy.learn_one(x, y, y_pred)
+
+    def learn_unsupervised(self, x: dict) -> None:
+        _learn_unsupervised(self.strategy, x)

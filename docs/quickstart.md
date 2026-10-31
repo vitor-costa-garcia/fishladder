@@ -39,3 +39,25 @@ for x, y in dataset:
     if ask:
         model.learn_one(x, {o: y[o] for o in ask})
 ```
+
+## Learning from unlabelled instances
+
+By default, unsupervised steps such as a scaler only learn from the instances whose labels were
+queried. With `learn_unsupervised=True`, the River pipelines of the model learn them from every
+instance, as with River's `learn_during_predict`, but for this model only:
+
+```python
+log = fl.evaluate.prequential(
+    dataset=fl.synth.MultiTarget(n_features=5, seed=42).take(2000),
+    model=multioutput.PerOutputRegressor(
+        preprocessing.StandardScaler() | linear_model.LinearRegression()
+    ),
+    strategy=fl.strategy.RandomPerOutput(p=0.5, seed=42),
+    budget=fl.budget.PerOutput(fl.budget.RateBudget(0.1)),
+    costs=costs,
+    learn_unsupervised=True,
+)
+```
+
+Models that also predict when they learn, such as River chains, learn from some instances more
+than once. See `fishladder.active.Wrapper` for which models learn from each instance once.

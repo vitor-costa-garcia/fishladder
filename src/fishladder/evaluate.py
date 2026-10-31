@@ -60,6 +60,7 @@ def iter_prequential(
     step: int = 1,
     log: Log | None = None,
     delay: Delay = None,
+    learn_unsupervised: bool = False,
 ) -> typing.Iterator[dict[str, typing.Any]]:
     """Evaluate an active learning setup on a stream, yielding results as it goes.
 
@@ -98,6 +99,10 @@ def iter_prequential(
         output, or a function of the features, the true outputs and the queried output, called
         once per query, which can draw random delays. A delay of `math.inf` means that the label
         never arrives, as when a query fails. Defaults to no delay.
+    learn_unsupervised
+        Whether to learn from the features of every instance, queried or not, such as with the
+        scaler of a River pipeline. See `active.Wrapper`. The model is set back as it was when
+        the evaluation ends, so a generator that is not used to the end should be closed.
 
     Yields
     ------
@@ -108,7 +113,6 @@ def iter_prequential(
     if step < 1:
         raise ValueError(f"step must be at least 1, got {step}")
 
-    learner = Wrapper(model, strategy, budget, costs)
     oracle = Oracle(costs)
     delay_of = _delay_function(delay, oracle.costs)
     # The labels waiting to be learned, by the step after which they arrive, then by the step of
@@ -123,34 +127,40 @@ def iter_prequential(
             state[metric.__class__.__name__] = metric
         return state
 
-    for x, y in dataset:
-        y_pred, utilities, probabilities, ask = learner.query_one(x)
-        if metric is not None:
-            y_scored = {o: y[o] for o in oracle.costs if o in y}
-            if all(o in y_pred for o in y_scored):
-                metric.update(y_scored, y_pred)
+    # Made last, since it changes the model, which the try below sets back
+    learner = Wrapper(model, strategy, budget, costs, learn_unsupervised=learn_unsupervised)
+    try:
+        for x, y in dataset:
+            y_pred, utilities, probabilities, ask = learner.query_one(x)
+            if metric is not None:
+                y_scored = {o: y[o] for o in oracle.costs if o in y}
+                if all(o in y_pred for o in y_scored):
+                    metric.update(y_scored, y_pred)
 
-        y_revealed, _ = oracle.reveal(y, ask)
-        # Draw the delays in the order of the costs, so that random delays are reproducible
-        delays = {o: delay_of(x, y, o) for o in oracle.costs if o in ask}
-        for o, value in y_revealed.items():
-            if delays[o] != math.inf:
-                arrival = pending.setdefault(n + int(delays[o]), {})
-                arrival.setdefault(n, (x, {}, y_pred))[1][o] = value
-        for x_old, y_old, y_pred_old in pending.pop(n, {}).values():
-            learner.learn_one(x_old, y_old, y_pred=y_pred_old)
+            y_revealed, _ = oracle.reveal(y, ask)
+            # Draw the delays in the order of the costs, so that random delays are reproducible
+            delays = {o: delay_of(x, y, o) for o in oracle.costs if o in ask}
+            for o, value in y_revealed.items():
+                if delays[o] != math.inf:
+                    arrival = pending.setdefault(n + int(delays[o]), {})
+                    arrival.setdefault(n, (x, {}, y_pred))[1][o] = value
+            for x_old, y_old, y_pred_old in pending.pop(n, {}).values():
+                learner.learn_one(x_old, y_old, y_pred=y_pred_old)
 
-        if log is not None:
-            log.append_one(
-                n, y, y_pred, utilities, ask, oracle.costs, budget.spent, delays, probabilities
-            )
-        n_queries += len(ask)
-        n += 1
-        if n % step == 0:
+            if log is not None:
+                log.append_one(
+                    n, y, y_pred, utilities, ask, oracle.costs, budget.spent, delays, probabilities
+                )
+            n_queries += len(ask)
+            n += 1
+            if n % step == 0:
+                yield report()
+
+        if n % step != 0:
             yield report()
-
-    if n % step != 0:
-        yield report()
+    finally:
+        # The model is the caller's, so it is left as it was given
+        learner.learn_unsupervised = False
 
 
 def prequential(
@@ -161,6 +171,7 @@ def prequential(
     costs: Mapping[Output, float],
     metric: typing.Any = None,
     delay: Delay = None,
+    learn_unsupervised: bool = False,
 ) -> Log:
     """Evaluate an active learning setup on a stream and return the experiment log.
 
@@ -183,6 +194,9 @@ def prequential(
     delay
         The number of instances after which queried labels arrive. Either a single value, one per
         output, or a function of the features, the true outputs and the queried output.
+    learn_unsupervised
+        Whether to learn from the features of every instance, queried or not. See
+        `active.Wrapper`.
 
     Returns
     -------
@@ -247,7 +261,15 @@ def prequential(
     """
     log = Log()
     for _ in iter_prequential(
-        dataset, model, strategy, budget, costs, metric=metric, log=log, delay=delay
+        dataset,
+        model,
+        strategy,
+        budget,
+        costs,
+        metric=metric,
+        log=log,
+        delay=delay,
+        learn_unsupervised=learn_unsupervised,
     ):
         pass
     return log
