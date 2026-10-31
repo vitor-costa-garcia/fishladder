@@ -113,7 +113,6 @@ def iter_prequential(
     if step < 1:
         raise ValueError(f"step must be at least 1, got {step}")
 
-    learner = Wrapper(model, strategy, budget, costs, learn_unsupervised=learn_unsupervised)
     oracle = Oracle(costs)
     delay_of = _delay_function(delay, oracle.costs)
     # The labels waiting to be learned, by the step after which they arrive, then by the step of
@@ -128,6 +127,8 @@ def iter_prequential(
             state[metric.__class__.__name__] = metric
         return state
 
+    # Made last, since it changes the model, which the try below sets back
+    learner = Wrapper(model, strategy, budget, costs, learn_unsupervised=learn_unsupervised)
     try:
         for x, y in dataset:
             y_pred, utilities, probabilities, ask = learner.query_one(x)

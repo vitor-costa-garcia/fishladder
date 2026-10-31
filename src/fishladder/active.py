@@ -21,52 +21,6 @@ _FLAG = "_LEARN_UNSUPERVISED_DURING_PREDICT"
 _PACKAGE = os.path.dirname(os.path.abspath(__file__)) + os.sep
 
 
-class _Setting:
-    """The value a wrapper gives to the River setting of its pipelines.
-
-    It is true while the wrapper learns from every instance, which is all that River checks, and
-    false once the wrapper stops. Copies of a pipeline, such as those a chain makes when it first
-    learns, share it, so they all stop with the wrapper, and the wrapper can tell its own setting
-    apart from any other. It also keeps what each pipeline had before, to put it back.
-
-    """
-
-    def __init__(self) -> None:
-        self.on = True
-        # Whether each pipeline had a setting of its own before, by id, and its value
-        self.previous: dict[int, tuple[bool, typing.Any]] = {}
-
-    def __bool__(self) -> bool:
-        return self.on
-
-    def give(self, pipeline: typing.Any) -> None:
-        own = vars(pipeline)
-        self.previous[id(pipeline)] = (_FLAG in own, own.get(_FLAG))
-        setattr(pipeline, _FLAG, self)
-
-    def take_back(self, pipeline: typing.Any) -> None:
-        """Put back what `pipeline` had before, skipping settings of wrappers that stopped."""
-        if vars(pipeline).get(_FLAG) is not self:
-            return
-        value: typing.Any = self
-        while isinstance(value, _Setting) and not value.on:
-            had, value = value.previous.get(id(pipeline), (False, None))
-            if not had:
-                delattr(pipeline, _FLAG)
-                return
-        setattr(pipeline, _FLAG, value)
-
-    def __copy__(self) -> _Setting:
-        return self
-
-    def __deepcopy__(self, memo: dict) -> _Setting:
-        return self
-
-    def __reduce__(self) -> tuple[type, tuple[bool]]:
-        # A saved model keeps the setting as River's own
-        return bool, (self.on,)
-
-
 def _outside_stacklevel() -> int:
     """The `stacklevel` that points `warnings.warn`, called by the caller of this function, at the
     first frame outside fishladder."""
@@ -202,14 +156,15 @@ class Wrapper:
 
         Unsupervised steps then learn each time their pipeline predicts or transforms an instance.
         So each instance is learned from once if each pipeline predicts it once, as with
-        `river.multioutput.PerOutputRegressor`. Models that also predict when they learn, as
+        `river.multioutput.PerOutputRegressor` (River 0.26 or later). Models that also predict when they learn, as
         River chains, model selectors and many other River ensembles and meta-models do, learn
         twice from the instances they learn from, and so do pipelines inside a
         `river.compose.TransformerUnion`. This is as with `river.compose.learn_during_predict`.
         A warning is raised for River chains and model selectors, but not for all such models.
         Models that make their pipelines when they first learn, as River multi-output models do,
         miss the instances predicted before. Models that make new pipelines with `clone` do not
-        keep the setting.
+        keep the setting. Copies of the model, and saved models, made while the setting is on
+        keep it on. Pipelines should not be shared by wrappers that learn from every instance.
 
     Examples
     --------
@@ -249,9 +204,8 @@ class Wrapper:
         self.costs = dict(costs)
         self._last: tuple[dict, dict] | None = None
         self._learn_unsupervised = False
-        self._setting = _Setting()
-        # The pipelines given the setting
-        self._flagged: list[typing.Any] = []
+        # The pipelines given the setting, with whether they had one of their own and its value
+        self._flagged: list[tuple[typing.Any, bool, typing.Any]] = []
         self.learn_unsupervised = learn_unsupervised
 
     @property
@@ -271,24 +225,26 @@ class Wrapper:
             shared = any(id(pipeline) in in_strategy for pipeline in pipelines)
             # Before changing anything, in case warnings are raised as errors
             _warn_unsupported(found, classes, shared)
-            self._setting = _Setting()
             for pipeline in pipelines:
-                self._setting.give(pipeline)
-            self._flagged = pipelines
+                own = vars(pipeline)
+                self._flagged.append((pipeline, _FLAG in own, own.get(_FLAG)))
+                setattr(pipeline, _FLAG, True)
         elif classes is not None and not value and self._learn_unsupervised:
             self._unflag(classes[0])
         self._learn_unsupervised = value
 
     def _unflag(self, Pipeline: type) -> None:
-        # This turns the setting off wherever it was copied, so the rest only tidies up
-        self._setting.on = False
-        # With copies of the pipelines, such as those a chain or a strategy made since
-        for pipeline in [
-            *self._flagged,
-            *_find(self.model, (Pipeline,))[Pipeline],
-            *_find(self.strategy, (Pipeline,))[Pipeline],
-        ]:
-            self._setting.take_back(pipeline)
+        flagged = {id(pipeline) for pipeline, _, _ in self._flagged}
+        for pipeline, had, previous in self._flagged:
+            if had:
+                setattr(pipeline, _FLAG, previous)
+            else:
+                vars(pipeline).pop(_FLAG, None)
+        # Copies of the pipelines, such as those a chain or a strategy made since
+        for holder in (self.model, self.strategy):
+            for pipeline in _find(holder, (Pipeline,))[Pipeline]:
+                if id(pipeline) not in flagged and vars(pipeline).get(_FLAG) is True:
+                    del vars(pipeline)[_FLAG]
         self._flagged = []
 
     def query_one(
@@ -305,6 +261,7 @@ class Wrapper:
 
         """
         y_pred = self._predict(x)
+        self._last = (x, y_pred)
         utilities, probabilities = self.strategy.sample_one(x, y_pred, self.costs)
         ask = self.budget.select_one(utilities, self.costs)
         self.budget.update({o: self.costs[o] for o in ask})
@@ -340,8 +297,10 @@ class Wrapper:
             arrive late, after the model learned from other instances: the strategy then learns
             from the prediction it made the query with. By default, the prediction is reused if
             `x` is the last instance passed to `predict_one`, which must not be changed in the
-            meantime, and `x` is predicted otherwise. With `learn_unsupervised`, late labels must
-            then come with `y_pred`, for unsupervised steps to learn from `x` only once.
+            meantime, and `x` is predicted otherwise. With `learn_unsupervised`, unsupervised steps
+            learn from `x` each time it is predicted, so late labels must come with `y_pred`, and
+            the outputs of an instance that is not passed to `predict_one`, as when
+            warm-starting the model, must be passed in one call.
 
         """
         if not y:
@@ -358,6 +317,4 @@ class Wrapper:
         if self.learn_unsupervised:
             _learn_unsupervised(self.model, x)
             _learn_unsupervised(self.strategy, x)
-        y_pred = self.model.predict_one(x)
-        self._last = (x, y_pred)
-        return y_pred
+        return self.model.predict_one(x)

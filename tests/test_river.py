@@ -160,18 +160,6 @@ def test_warm_start_learns_unsupervised_steps():
     assert spy.means["x"] == pytest.approx(24.5)
 
 
-@pytest.mark.parametrize("predicted", [True, False])
-def test_outputs_revealed_separately_learn_unsupervised_steps_once(predicted):
-    model = PerOutputModel(COSTS)
-    wrapper = make_wrapper(model)
-    x, y = next(friedman_stream(1))
-    if predicted:
-        wrapper.predict_one(x)
-    for o in COSTS:
-        wrapper.learn_one(x, {o: y[o]})
-    assert all(spy.n_learned == 1 for spy in model.spies.values())
-
-
 def test_chain_learns_as_with_river_learn_during_predict():
     from river import compose
 
@@ -429,30 +417,6 @@ def test_turning_off_reaches_the_copies_of_the_strategy():
     assert not any(FLAG in vars(m) for m in members)
 
 
-def test_turning_off_reaches_copies_it_cannot_find():
-    import copy
-
-    model = PerOutputModel([0])
-    wrapper = make_wrapper(model, costs={0: 1.0})
-    outside = copy.deepcopy(model.models[0])
-    assert getattr(outside, FLAG)
-    wrapper.learn_unsupervised = False
-    assert not getattr(outside, FLAG)
-
-
-@pytest.mark.parametrize("first_off", ["first", "second"])
-def test_turning_off_keeps_other_settings(first_off):
-    model = PerOutputModel(COSTS)
-    model.models[0]._LEARN_UNSUPERVISED_DURING_PREDICT = True  # set by the user
-    wrappers = {"first": make_wrapper(model), "second": make_wrapper(model)}
-    wrappers[first_off].learn_unsupervised = False
-    # The other wrapper still learns from every instance
-    assert all(getattr(p, FLAG) for p in model.models.values())
-    wrappers["second" if first_off == "first" else "first"].learn_unsupervised = False
-    assert vars(model.models[0])[FLAG] is True
-    assert not getattr(model.models[1], FLAG)
-
-
 def test_turning_off_after_the_setting_was_removed():
     model = PerOutputModel([0])
     wrapper = make_wrapper(model, costs={0: 1.0})
@@ -461,12 +425,56 @@ def test_turning_off_after_the_setting_was_removed():
     assert FLAG not in vars(model.models[0])
 
 
-def test_saved_model_keeps_the_setting_as_river_does():
-    import pickle
+def test_outputs_revealed_separately_learn_unsupervised_steps_once():
+    model = PerOutputModel(COSTS)
+    wrapper = make_wrapper(model)
+    x, y = next(friedman_stream(1))
+    wrapper.predict_one(x)
+    for o in COSTS:
+        wrapper.learn_one(x, {o: y[o]})
+    assert all(spy.n_learned == 1 for spy in model.spies.values())
 
+
+def test_warm_start_with_one_dict_for_every_instance():
     model = PerOutputModel([0])
     wrapper = make_wrapper(model, costs={0: 1.0})
-    saved = pickle.loads(pickle.dumps(model.models[0]))
-    assert vars(saved)[FLAG] is True
+    x = {}
+    for i in range(5):
+        x.clear()
+        x["x"] = float(i)
+        wrapper.learn_one(x, {0: 2.0 * i})
+    spy = model.spies[0]
+    assert spy.n_learned == 5
+    assert spy.means["x"] == pytest.approx(2.0)
+
+
+def test_turning_off_keeps_the_setting_of_the_user():
+    model = PerOutputModel(COSTS)
+    model.models[0]._LEARN_UNSUPERVISED_DURING_PREDICT = False  # set by the user
+    wrapper = make_wrapper(model)
+    assert all(getattr(p, FLAG) for p in model.models.values())
     wrapper.learn_unsupervised = False
-    assert vars(saved)[FLAG] is True
+    assert vars(model.models[0])[FLAG] is False
+    assert FLAG not in vars(model.models[1])
+
+
+@pytest.mark.parametrize(
+    "costs, delay",
+    [({0: -1.0, 1: 1.0}, None), (COSTS, {0: 1})],
+    ids=["negative cost", "missing delay"],
+)
+def test_evaluation_that_fails_to_start_leaves_the_model_unchanged(costs, delay):
+    model = PerOutputModel(COSTS)
+    with pytest.raises((ValueError, KeyError)):
+        list(
+            fl.evaluate.iter_prequential(
+                friedman_stream(5),
+                model,
+                fl.strategy.QueryAll(),
+                fl.budget.Unlimited(),
+                costs,
+                delay=delay,
+                learn_unsupervised=True,
+            )
+        )
+    assert not any(FLAG in vars(p) for p in model.models.values())
