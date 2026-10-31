@@ -7,8 +7,10 @@
 ### Feature
 
 * Add `learn_unsupervised` to `Wrapper`, `iter_prequential` and `prequential`, so that the
-  unsupervised steps of River pipelines, such as a scaler, learn from every instance, queried or
-  not. Models and strategies can define a `learn_unsupervised(x)` method to do the same.
+  unsupervised steps of the model's River pipelines, such as a scaler, learn from every instance,
+  queried or not. This is River's `learn_during_predict` for the model only, and a warning is
+  raised for River chains and model selectors, which learn from some instances more than once.
+  Models and strategies can define a `learn_unsupervised(x)` method to do the same.
 
 * Add RRMSE, averaged metrics and AUC against cost ([`04f6d86`](https://github.com/vitor-costa-garcia/fishladder/commit/04f6d86edc51dac561b70e4797840e6a446bd76d))
 
@@ -18,7 +20,9 @@
 
 ### Documentation
 
-* Show `learn_unsupervised` in the quickstart notebook
+* Show `learn_unsupervised` in the quickstart notebook and the quickstart page
+
+* Say that the notebooks need River 0.26 or later
 
 * Add Sphinx documentation with an API reference
 
