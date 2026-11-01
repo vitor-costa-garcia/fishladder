@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import math
 import numbers
 import typing
@@ -9,8 +10,10 @@ from collections.abc import Callable, Mapping
 
 from fishladder.active import Wrapper
 from fishladder.base import BudgetManager, Dataset, Model, Output, QueryStrategy
+from fishladder.budget import Unlimited
 from fishladder.log import Log
 from fishladder.oracle import Oracle
+from fishladder.strategy import QueryAll
 
 __all__ = ["iter_prequential", "prequential"]
 
@@ -53,9 +56,9 @@ def _delay_function(
 def iter_prequential(
     dataset: Dataset,
     model: Model,
-    strategy: QueryStrategy,
-    budget: BudgetManager,
-    costs: Mapping[Output, float],
+    strategy: QueryStrategy | None = None,
+    budget: BudgetManager | None = None,
+    costs: Mapping[Output, float] | None = None,
     metric: typing.Any = None,
     step: int = 1,
     log: Log | None = None,
@@ -81,11 +84,13 @@ def iter_prequential(
     model
         A multi-output model, such as any River multi-output model.
     strategy
-        The query strategy.
+        The query strategy. Defaults to `strategy.QueryAll`.
     budget
-        The budget manager.
+        The budget manager. Defaults to `budget.Unlimited`.
     costs
-        The cost of querying each output.
+        The cost of querying each output. Defaults to a cost of 1 for each output of the first
+        instance. With all three defaults, every label is learned, which is plain prequential
+        evaluation.
     metric
         An optional River-style multi-output metric, updated with `metric.update(y, y_pred)` on
         the outputs that have a cost, once the model can predict all of them. Other outputs of
@@ -113,6 +118,15 @@ def iter_prequential(
     if step < 1:
         raise ValueError(f"step must be at least 1, got {step}")
 
+    strategy = QueryAll() if strategy is None else strategy
+    budget = Unlimited() if budget is None else budget
+    if costs is None:
+        # Take the outputs from the first instance, then put it back in the stream
+        dataset = iter(dataset)
+        first = next(dataset, None)
+        costs = {} if first is None else {o: 1.0 for o in first[1]}
+        if first is not None:
+            dataset = itertools.chain([first], dataset)
     oracle = Oracle(costs)
     delay_of = _delay_function(delay, oracle.costs)
     # The labels waiting to be learned, by the step after which they arrive, then by the step of
@@ -166,9 +180,9 @@ def iter_prequential(
 def prequential(
     dataset: Dataset,
     model: Model,
-    strategy: QueryStrategy,
-    budget: BudgetManager,
-    costs: Mapping[Output, float],
+    strategy: QueryStrategy | None = None,
+    budget: BudgetManager | None = None,
+    costs: Mapping[Output, float] | None = None,
     metric: typing.Any = None,
     delay: Delay = None,
     learn_unsupervised: bool = False,
@@ -184,11 +198,12 @@ def prequential(
     model
         A multi-output model, such as any River multi-output model.
     strategy
-        The query strategy.
+        The query strategy. Defaults to `strategy.QueryAll`.
     budget
-        The budget manager.
+        The budget manager. Defaults to `budget.Unlimited`.
     costs
-        The cost of querying each output.
+        The cost of querying each output. Defaults to a cost of 1 for each output of the first
+        instance.
     metric
         An optional River-style multi-output metric, updated in place.
     delay
@@ -229,6 +244,18 @@ def prequential(
     >>> df = log.to_frame()
     >>> df.groupby("output")["queried"].sum().to_dict()
     {'a': 75, 'b': 12}
+
+    Without a strategy, a budget and costs, every label is learned:
+
+    >>> log = fl.evaluate.prequential(
+    ...     dataset=stream(200),
+    ...     model=multioutput.RegressorChain(
+    ...         preprocessing.StandardScaler() | linear_model.LinearRegression(),
+    ...         order=["a", "b"],
+    ...     ),
+    ... )
+    >>> log.to_frame().groupby("output")["queried"].sum().to_dict()
+    {'a': 200, 'b': 200}
 
     Labels can also arrive late. Here, the labels of `b` only arrive after 20 more instances,
     and each of them has a one in ten chance of never arriving:
