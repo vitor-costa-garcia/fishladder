@@ -66,6 +66,9 @@ complements River rather than replacing it.
   from which per-output and averaged metrics, learning curves indexed by cost,
   and areas under them are computed (`fl.metrics`), including the relative
   RMSE (`fl.metrics.RRMSE`) and its average over outputs (aRRMSE).
+- **Plots** (`fl.plot`) of learning curves, of a metric against the budget or the
+  cost spent, of differences to a baseline, and of how often each output is
+  queried. Repeated runs, such as different seeds, are drawn as their mean and range.
 - **A synthetic multi-target stream generator** (`fl.synth.MultiTarget`), with
   control over the correlation between outputs, their noise and smoothness, and
   when each one drifts.
@@ -80,7 +83,7 @@ pip install "fishladder[river]"
 
 The `river` extra installs River, which the examples use for models and
 metrics. fishladder itself only depends on NumPy and pandas. Add the `plots`
-extra for the notebooks.
+extra for `fl.plot` and the notebooks.
 
 ## Quickstart
 
@@ -112,7 +115,7 @@ fl.metrics.per_output(log, metrics.MAE())
 
 The log can be turned into a DataFrame with `log.to_frame()`, and
 `fl.metrics.curve` gives learning curves along the stream, against either the
-number of instances or the cost spent.
+number of instances or the cost spent. `fl.plot.curve` draws them.
 
 To add active learning to an existing River loop instead:
 
@@ -129,7 +132,7 @@ for x, y in dataset:
 
 The [notebooks](https://github.com/vitor-costa-garcia/fishladder/tree/main/notebooks) show fishladder in use with River: a quickstart,
 the River wrapper, the query strategies, synthetic streams with drift,
-delayed labels, and randomized querying.
+delayed labels, randomized querying, and plots.
 
 ## Contributing and feedback
 

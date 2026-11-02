@@ -61,3 +61,61 @@ log = fl.evaluate.prequential(
 
 Models that also predict when they learn, such as River chains, learn from some instances more
 than once. See `fishladder.active.Wrapper` for which models learn from each instance once.
+
+## Plots
+
+`fl.plot` draws plots from logs with matplotlib, which comes with the `plots` extra. A run is a
+log, or a list of logs of the same setup, such as different seeds. For a list, the plots draw the
+mean, and shade the range between the lowest and highest values. This range is not a
+confidence interval. Pass a dictionary to compare runs:
+
+```python
+from river import utils
+
+
+def run(budget, seed):
+    return fl.evaluate.prequential(
+        dataset=fl.synth.MultiTarget(n_features=5, seed=seed).take(2000),
+        model=multioutput.RegressorChain(
+            preprocessing.StandardScaler() | linear_model.LinearRegression(),
+            order=list(costs),
+        ),
+        strategy=fl.strategy.RandomPerOutput(p=0.5, seed=seed),
+        budget=budget,
+        costs=costs,
+    )
+
+
+runs = {
+    "shared": [run(fl.budget.RateBudget(1.5), seed) for seed in range(3)],
+    "per output": [run(fl.budget.PerOutput(fl.budget.RateBudget(1.5)), seed) for seed in range(3)],
+}
+
+# Learning curves, one panel per output, against the number of instances or the cost spent.
+# Against cost, `every` is in cost, so all runs have points at the same costs.
+fl.plot.curve(runs, utils.Rolling(metrics.MAE, window_size=200), x="cost", every=20)
+
+# How often each output is queried
+fl.plot.queries(runs, window=200)
+```
+
+`fl.plot.budget` compares setups across budgets. Give it a list of runs per setup, one per
+budget. Each run is drawn at the cost it really spent, which is read from the log. Pass
+`budgets=rates` to draw it at its budget instead:
+
+```python
+rates = [0.5, 1.0, 2.0, 4.0]
+fl.plot.budget(
+    {
+        "shared": [[run(fl.budget.RateBudget(r), seed) for seed in range(3)] for r in rates],
+        "per output": [
+            [run(fl.budget.PerOutput(fl.budget.RateBudget(r)), seed) for seed in range(3)]
+            for r in rates
+        ],
+    },
+    metrics.MAE(),
+)
+```
+
+Each function returns the axes it drew on, so you can change the plot afterwards, for example
+with `ax.set(yscale="log")`.

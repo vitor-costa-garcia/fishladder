@@ -10,6 +10,20 @@
   default, every label is learned, with a cost of 1 for each output of the first instance, so a
   plain prequential evaluation only needs a dataset and a model.
 
+* Add `Log.outputs`, `Log.total_cost` and `Log.cost_before`, and `outputs` to `fl.metrics.curve`, `average`, `average_curve` and `auc` to use only some of the outputs
+
+* Add `fl.plot` with learning curves, a metric against the budget or the cost spent, differences to a baseline, and how often each output is queried
+
+### Fix
+
+* `fl.metrics.curve` counts `cum_cost` from the start of the log, without what a reused budget spent before it
+
+### Documentation
+
+* Add a notebook on plots
+
+* Explain that `VariableThreshold`, and so `QueryByCommittee` and `ExpectedError` with it, query at most about half of the instances in the long run
+
 ## v0.2.0 (2026-10-30)
 
 ### Feature

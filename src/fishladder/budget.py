@@ -187,6 +187,13 @@ class VariableThreshold(BudgetManager):
     Each threshold starts at the first finite utility seen for its output. Infinite utilities
     always pass the threshold and do not change it.
 
+    A threshold settles where it is raised as often as it is lowered. Once it has settled, this
+    manager queries an output on at most about half of the instances where it is affordable, so
+    a budget that allows more than that is mostly not spent. For example, with
+    `PerOutput(RateBudget(0.7 * n))` for `n` outputs that cost 1, the outputs are queried on
+    about half of the instances on a long stream, not 70%. While a threshold adapts, at the
+    start of the stream or when the utilities change, the manager can query more.
+
     With `randomize`, each utility is compared to the threshold multiplied by a random factor
     drawn from a normal distribution with mean 1 and standard deviation `randomize`. This is the
     randomized variable uncertainty strategy of Žliobaitė et al. (2014): instances whose utility
@@ -224,6 +231,20 @@ class VariableThreshold(BudgetManager):
     1.0 {'a'} 1.1
     0.5 set() 0.99
     2.0 {'a'} 1.089
+
+    With a budget that is never short, about half of the instances are queried in the long run:
+
+    >>> import random
+
+    >>> rng = random.Random(42)
+    >>> b = budget.VariableThreshold(budget.Unlimited())
+    >>> n = 0
+    >>> for _ in range(10_000):
+    ...     queried = b.select_one({"a": rng.random()}, costs={"a": 1.0})
+    ...     b.update({o: 1.0 for o in queried})
+    ...     n += len(queried)
+    >>> round(n / 10_000, 2)
+    0.5
 
     """
 

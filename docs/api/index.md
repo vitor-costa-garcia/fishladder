@@ -9,6 +9,7 @@ budget
 active
 log
 metrics
+plot
 oracle
 synth
 base

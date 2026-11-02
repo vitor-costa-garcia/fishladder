@@ -11,8 +11,9 @@ import copy
 import itertools
 import math
 import typing
+from collections.abc import Iterable
 
-from fishladder.base import Output
+from fishladder.base import Output, _select_outputs
 from fishladder.log import Log
 
 if typing.TYPE_CHECKING:
@@ -133,7 +134,9 @@ def per_output(log: Log, metric: typing.Any) -> dict[Output, typing.Any]:
     return metrics
 
 
-def curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
+def curve(
+    log: Log, metric: typing.Any, every: int = 1, outputs: Iterable[Output] | None = None
+) -> pd.DataFrame:
     """Compute the running value of a metric for each output, along the stream.
 
     This is what learning curves are drawn from, against either `step` or `cum_cost`.
@@ -146,19 +149,28 @@ def curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
         A River-style single-output metric, such as `river.metrics.MAE()`. It is not modified.
     every
         Record the value of the metric every `every` instances, and after the last one.
+    outputs
+        The outputs to compute the metric for. Defaults to all of them.
 
     Returns
     -------
-    A DataFrame with columns `step`, `cum_cost`, `output` and `value`. The value is NaN until
-    the output has been predicted at least once, which can take a while when its labels are
-    delayed.
+    A DataFrame with columns `step`, `cum_cost`, `output` and `value`. `cum_cost` is the cost
+    spent since the start of the log, without what a reused budget spent before it (see
+    `Log.cost_before`). The value is NaN until the output has been predicted at least once,
+    which can take a while when its labels are delayed.
 
     """
-    import pandas as pd
-
     if every < 1:
         raise ValueError(f"every must be at least 1, got {every}")
+    selected = _select_outputs(log.outputs, outputs)
+    return _curve(log, metric, every, None if selected is None else set(selected))
 
+
+def _curve(log: Log, metric: typing.Any, every: int, wanted: set[Output] | None) -> pd.DataFrame:
+    """`curve`, for the outputs in `wanted` or for all of them, without checking them."""
+    import pandas as pd
+
+    before = log.cost_before
     metrics: dict[Output, typing.Any] = {}
     scored: set[Output] = set()
     records = []
@@ -170,21 +182,24 @@ def curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
 
     for row in log:
         o = row["output"]
+        if wanted is not None and o not in wanted:
+            last = row
+            continue
         if o not in metrics:
             metrics[o] = copy.deepcopy(metric)
         if row["y_true"] is not None and row["y_pred"] is not None:
             metrics[o].update(row["y_true"], row["y_pred"])
             scored.add(o)
         if (row["step"] + 1) % every == 0:
-            records.append((row["step"], row["cum_cost"], o, value(o)))
+            records.append((row["step"], row["cum_cost"] - before, o, value(o)))
         last = row
     if last is not None and (last["step"] + 1) % every != 0:
         for o in metrics:
-            records.append((last["step"], last["cum_cost"], o, value(o)))
+            records.append((last["step"], last["cum_cost"] - before, o, value(o)))
     return pd.DataFrame(records, columns=["step", "cum_cost", "output", "value"])
 
 
-def average(log: Log, metric: typing.Any) -> float:
+def average(log: Log, metric: typing.Any, outputs: Iterable[Output] | None = None) -> float:
     """Average a metric over the outputs, each computed over the whole stream.
 
     With `RRMSE`, this is the average relative root mean squared error (aRRMSE) of multi-target
@@ -196,18 +211,28 @@ def average(log: Log, metric: typing.Any) -> float:
         An experiment log.
     metric
         A River-style single-output metric. It is not modified.
+    outputs
+        The outputs to average over. Defaults to all of them.
 
     Returns
     -------
     The average of the metric over the outputs that were predicted at least once, or NaN if
-    none were. It is NaN if the metric is NaN for any of them.
+    none were. It is NaN if the metric is NaN for any of them. With `outputs`, it is NaN if one
+    of them was never predicted.
 
     """
-    values = [m.get() for m in per_output(log, metric).values()]
+    selected = _select_outputs(log.outputs, outputs)
+    found = per_output(log, metric)
+    if selected is None:
+        values = [m.get() for m in found.values()]
+    else:
+        values = [found[o].get() if o in found else math.nan for o in selected]
     return sum(values) / len(values) if values else math.nan
 
 
-def average_curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
+def average_curve(
+    log: Log, metric: typing.Any, every: int = 1, outputs: Iterable[Output] | None = None
+) -> pd.DataFrame:
     """Compute the running average of a metric over the outputs, along the stream.
 
     With `RRMSE`, this gives learning curves of the aRRMSE.
@@ -220,6 +245,8 @@ def average_curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
         A River-style single-output metric, such as `RRMSE()`. It is not modified.
     every
         Record the value of the metric every `every` instances, and after the last one.
+    outputs
+        The outputs to average over. Defaults to all of them.
 
     Returns
     -------
@@ -227,7 +254,7 @@ def average_curve(log: Log, metric: typing.Any, every: int = 1) -> pd.DataFrame:
     has been predicted at least once.
 
     """
-    per_step = curve(log, metric, every).groupby(["step", "cum_cost"], sort=False)["value"]
+    per_step = curve(log, metric, every, outputs).groupby(["step", "cum_cost"], sort=False)["value"]
     # mean() would skip NaN, and average over the outputs that happen to be scored
     return per_step.agg(lambda v: v.mean(skipna=False)).reset_index()
 
@@ -242,7 +269,11 @@ def _area(xs: list[float], ys: list[float]) -> float:
 
 
 def auc(
-    log: Log, metric: typing.Any, every: int = 1, average: bool = False
+    log: Log,
+    metric: typing.Any,
+    every: int = 1,
+    average: bool = False,
+    outputs: Iterable[Output] | None = None,
 ) -> dict[Output, float] | float:
     """Compute the area under the learning curve of a metric, against the cost spent.
 
@@ -263,6 +294,9 @@ def auc(
     average
         Whether to compute the area under the curve of the average of the metric over the
         outputs (see `average_curve`), rather than one area per output.
+    outputs
+        The outputs to compute the area for, in order, or to average over. Defaults to all of
+        them.
 
     Returns
     -------
@@ -271,9 +305,13 @@ def auc(
 
     """
     if average:
-        c = average_curve(log, metric, every)
+        c = average_curve(log, metric, every, outputs)
         return _area(c["cum_cost"].tolist(), c["value"].tolist())
-    return {
-        o: _area(c["cum_cost"].tolist(), c["value"].tolist())
-        for o, c in curve(log, metric, every).groupby("output", sort=False)
+    selected = _select_outputs(log.outputs, outputs)
+    c = _curve(log, metric, every, None if selected is None else set(selected))
+    areas: dict[Output, float] = {
+        o: _area(g["cum_cost"].tolist(), g["value"].tolist())
+        for o, g in c.groupby("output", sort=False)
     }
+    # An output without any point on the curve has no area
+    return areas if selected is None else {o: areas.get(o, math.nan) for o in selected}

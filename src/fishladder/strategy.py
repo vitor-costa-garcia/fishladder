@@ -118,6 +118,12 @@ class QueryByCommittee(QueryStrategy):
     Utilities of different outputs are in different units. When outputs share a budget, they are
     compared directly, so per-output budgets (`budget.PerOutput`) are usually a better fit.
 
+    With a per-output budget, each output is queried as soon as its budget allows, whatever its
+    utility. Wrap the budget in `budget.VariableThreshold` so that it goes to the instances with
+    the highest utilities. That manager queries an output on at most about half of the instances
+    in the long run, so a larger budget is then mostly not spent. With a shared budget, the
+    utilities already decide which outputs get the labels.
+
     Parameters
     ----------
     regressor
@@ -211,6 +217,12 @@ class ExpectedError(QueryStrategy):
 
     Utilities of different outputs are in different units. When outputs share a budget, they are
     compared directly, so per-output budgets (`budget.PerOutput`) are usually a better fit.
+
+    With a per-output budget, each output is queried as soon as its budget allows, whatever its
+    utility. Wrap the budget in `budget.VariableThreshold` so that it goes to the instances with
+    the highest utilities. That manager queries an output on at most about half of the instances
+    in the long run, so a larger budget is then mostly not spent. With a shared budget, the
+    utilities already decide which outputs get the labels.
 
     Parameters
     ----------
