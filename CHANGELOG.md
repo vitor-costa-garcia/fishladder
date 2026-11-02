@@ -18,6 +18,10 @@
 
 * `fl.metrics.curve` counts `cum_cost` from the start of the log, without what a reused budget spent before it
 
+### Documentation
+
+* Explain that `VariableThreshold`, and so `QueryByCommittee` and `ExpectedError` with it, query at most about half of the instances in the long run
+
 ## v0.2.0 (2026-10-30)
 
 ### Feature
