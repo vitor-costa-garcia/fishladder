@@ -20,6 +20,8 @@
 
 ### Documentation
 
+* Add a notebook on plots
+
 * Explain that `VariableThreshold`, and so `QueryByCommittee` and `ExpectedError` with it, query at most about half of the instances in the long run
 
 ## v0.2.0 (2026-10-30)
