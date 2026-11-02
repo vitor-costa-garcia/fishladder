@@ -12,6 +12,8 @@
 
 * Add `Log.outputs`, `Log.total_cost` and `Log.cost_before`, and `outputs` to `fl.metrics.curve`, `average`, `average_curve` and `auc` to use only some of the outputs
 
+* Add `fl.plot` with learning curves, a metric against the budget or the cost spent, differences to a baseline, and how often each output is queried
+
 ### Fix
 
 * `fl.metrics.curve` counts `cum_cost` from the start of the log, without what a reused budget spent before it

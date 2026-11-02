@@ -33,7 +33,7 @@ dependencies = [
 [project.optional-dependencies]
 river = ["river>=0.21"]
 plots = ["matplotlib"]
-dev = ["pytest", "pytest-cov", "ruff", "mypy", "pandas-stubs", "river>=0.21"]
+dev = ["pytest", "pytest-cov", "ruff", "mypy", "pandas-stubs", "river>=0.21", "matplotlib"]
 docs = ["sphinx", "furo", "myst-parser"]
 
 [project.urls]
