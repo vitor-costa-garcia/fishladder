@@ -10,6 +10,12 @@
   default, every label is learned, with a cost of 1 for each output of the first instance, so a
   plain prequential evaluation only needs a dataset and a model.
 
+* Add `Log.outputs`, `Log.total_cost` and `Log.cost_before`, and `outputs` to `fl.metrics.curve`, `average`, `average_curve` and `auc` to use only some of the outputs
+
+### Fix
+
+* `fl.metrics.curve` counts `cum_cost` from the start of the log, without what a reused budget spent before it
+
 ## v0.2.0 (2026-10-30)
 
 ### Feature

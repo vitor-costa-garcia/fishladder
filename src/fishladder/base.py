@@ -34,6 +34,27 @@ def _learn_unsupervised(obj: typing.Any, x: dict) -> None:
         hook(x)
 
 
+def _select_outputs(
+    known: Iterable[Output], outputs: Iterable[Output] | None
+) -> list[Output] | None:
+    """The given outputs as a list, after checking that they are known and not repeated."""
+    if outputs is None:
+        return None
+    if isinstance(outputs, str):
+        raise TypeError(f"outputs must be a list of outputs, not a string, got {outputs!r}")
+    outputs = list(outputs)
+    if not outputs:
+        raise ValueError("no outputs given")
+    known = set(known)
+    unknown = [o for o in outputs if o not in known]
+    if unknown:
+        raise KeyError(f"outputs {unknown} are not in the logs")
+    repeated = [o for o in dict.fromkeys(outputs) if outputs.count(o) > 1]
+    if repeated:
+        raise ValueError(f"outputs {repeated} are given more than once")
+    return outputs
+
+
 @typing.runtime_checkable
 class Model(typing.Protocol):
     """An incremental multi-output model.

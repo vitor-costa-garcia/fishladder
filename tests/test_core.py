@@ -266,6 +266,16 @@ def test_log_shape():
     ]
 
 
+def test_log_outputs_and_total_cost():
+    log = fl.evaluate.prequential(
+        make_stream(10), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    assert log.outputs == list(COSTS)
+    assert log.total_cost == log.to_frame()["cost"].sum() == 10 * sum(COSTS.values())
+    assert fl.Log().outputs == []
+    assert fl.Log().total_cost == 0.0
+
+
 def test_iter_prequential_reports():
     reports = list(
         fl.evaluate.iter_prequential(
@@ -1490,3 +1500,103 @@ def test_learn_unsupervised_skips_objects_it_cannot_read():
     fl.active.Wrapper(
         model, fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS, learn_unsupervised=True
     )
+
+
+def test_average_over_some_outputs():
+    log = fl.evaluate.prequential(
+        make_stream(30), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    per_output = fl.metrics.per_output(log, AbsError())
+    expected = statistics.fmean(per_output[o].get() for o in ["a", "c"])
+    assert fl.metrics.average(log, AbsError(), outputs=["a", "c"]) == pytest.approx(expected)
+
+    curve = fl.metrics.average_curve(log, AbsError(), every=5, outputs=["c", "a"])
+    assert curve["value"].iloc[-1] == pytest.approx(expected)
+
+    from fishladder.metrics import _area
+
+    assert fl.metrics.auc(log, AbsError(), every=5, average=True, outputs=["a", "c"]) == (
+        pytest.approx(_area(curve["cum_cost"].tolist(), curve["value"].tolist()))
+    )
+    assert set(fl.metrics.auc(log, AbsError(), outputs=["b"])) == {"b"}
+
+
+def test_average_rejects_unknown_or_no_outputs():
+    log = fl.evaluate.prequential(
+        make_stream(5), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    with pytest.raises(KeyError, match="'z'"):
+        fl.metrics.average(log, AbsError(), outputs=["a", "z"])
+    with pytest.raises(ValueError, match="no outputs"):
+        fl.metrics.average_curve(log, AbsError(), outputs=[])
+
+
+def test_auc_keeps_order_of_given_outputs():
+    log = fl.evaluate.prequential(
+        make_stream(10), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    assert list(fl.metrics.auc(log, AbsError(), outputs=["c", "a"])) == ["c", "a"]
+
+
+def test_outputs_cannot_repeat():
+    log = fl.evaluate.prequential(
+        make_stream(5), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    for f in [fl.metrics.average, fl.metrics.average_curve]:
+        with pytest.raises(ValueError, match=r"\['a'\] are given more than once"):
+            f(log, AbsError(), outputs=["a", "a", "b"])
+
+
+def test_total_cost_counts_only_the_log():
+    budget = fl.budget.Unlimited()
+    fl.evaluate.prequential(make_stream(5), MeanModel(), fl.strategy.QueryAll(), budget, COSTS)
+    # The budget is reused, so cum_cost also counts the first run
+    log = fl.evaluate.prequential(
+        make_stream(5), MeanModel(), fl.strategy.QueryAll(), budget, COSTS
+    )
+    assert log.total_cost == 5 * sum(COSTS.values())
+    assert list(log)[-1]["cum_cost"] == 2 * log.total_cost
+
+
+def test_log_outputs_include_outputs_added_later():
+    log = fl.Log()
+    log.append_one(0, {"a": 1.0}, {}, {}, [], {"a": 1.0}, 0.0)
+    log.append_one(1, {"a": 1.0, "b": 2.0}, {}, {}, [], {"a": 1.0, "b": 1.0}, 0.0)
+    assert log.outputs == ["a", "b"]
+
+
+def test_curve_of_some_outputs():
+    log = fl.evaluate.prequential(
+        make_stream(10), MeanModel(), fl.strategy.QueryAll(), fl.budget.Unlimited(), COSTS
+    )
+    every = fl.metrics.curve(log, AbsError(), every=3)
+    some = fl.metrics.curve(log, AbsError(), every=3, outputs=["c"])
+    expected = every[every["output"] == "c"].reset_index(drop=True)
+    assert some.equals(expected)
+
+
+def test_curve_counts_cost_from_start_of_log():
+    budget = fl.budget.Unlimited()
+    first = fl.evaluate.prequential(
+        make_stream(5), MeanModel(), fl.strategy.QueryAll(), budget, COSTS
+    )
+    second = fl.evaluate.prequential(
+        make_stream(5), MeanModel(), fl.strategy.QueryAll(), budget, COSTS
+    )
+    assert first.cost_before == 0
+    assert second.cost_before == first.total_cost
+    for log in [first, second]:
+        assert fl.metrics.curve(log, AbsError())["cum_cost"].max() == log.total_cost
+
+
+def test_auc_is_nan_for_outputs_without_points():
+    # Output b only has a row at the first step, and the curve is only recorded at the third
+    log = fl.Log()
+    log.append_one(
+        0, {"a": 1.0, "b": 1.0}, {"a": 0.0, "b": 0.0}, {}, ["a", "b"], {"a": 1.0, "b": 1.0}, 2.0
+    )
+    log.append_one(1, {"a": 1.0}, {"a": 0.0}, {}, ["a"], {"a": 1.0}, 3.0)
+    log.append_one(2, {"a": 1.0}, {"a": 0.0}, {}, ["a"], {"a": 1.0}, 4.0)
+    areas = fl.metrics.auc(log, AbsError(), every=3, outputs=["a", "b"])
+    assert list(areas) == ["a", "b"]
+    assert math.isnan(areas["b"])

@@ -73,6 +73,28 @@ class Log:
         for row in self._rows:
             yield dict(zip(COLUMNS, row))
 
+    @property
+    def outputs(self) -> list[Output]:
+        """The outputs that have rows, in the order of their first row."""
+        return list(dict.fromkeys(row[1] for row in self._rows))
+
+    @property
+    def total_cost(self) -> float:
+        """The sum of the costs paid in the log."""
+        i = COLUMNS.index("cost")
+        return sum(row[i] for row in self._rows)
+
+    @property
+    def cost_before(self) -> float:
+        """What the budget had spent before the log started, 0 for a new budget.
+
+        `cum_cost` counts it too, so it is not 0 when a budget is used for several runs.
+
+        """
+        if not self._rows:
+            return 0.0
+        return self._rows[-1][COLUMNS.index("cum_cost")] - self.total_cost
+
     def append_one(
         self,
         step: int,
